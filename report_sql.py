@@ -7,7 +7,7 @@ older MySQL versions commonly bundled with POS installations.
 SALES_SQL = """
 SELECT
     sold_at, barcode, item_name, payment_method, buy_price, sell_price,
-    previous_sell_price, explicit_discount_amount, price_level,
+    regular_sell_price, explicit_discount_amount, price_level,
     SUM(qty_sold) AS qty_sold,
     SUM(sales) AS sales,
     category
@@ -38,17 +38,7 @@ SELECT
         LIMIT 1
     ), 0) AS buy_price,
     tl.price AS sell_price,
-    COALESCE((
-        SELECT prior_tl.price
-        FROM ticketlines prior_tl
-        JOIN receipts prior_r ON prior_r.id = prior_tl.ticket
-        WHERE prior_tl.product = tl.product
-          AND prior_tl.units <> 0
-          AND (prior_r.datenew < r.datenew
-               OR (prior_r.datenew = r.datenew AND prior_tl.id < tl.id))
-        ORDER BY prior_r.datenew DESC, prior_tl.id DESC
-        LIMIT 1
-    ), tl.price) AS previous_sell_price,
+    p.pricesell AS regular_sell_price,
     COALESCE((
         SELECT ABS(discount_tl.units * discount_tl.price)
         FROM ticketlines discount_tl
@@ -81,7 +71,7 @@ WHERE r.datenew >= %(start_at)s
 ) sale_rows
 WHERE (%(payment_method)s = 'All' OR FIND_IN_SET(%(payment_method)s, REPLACE(payment_method, ', ', ',')) > 0)
 GROUP BY sold_at, barcode, item_name, payment_method, buy_price, sell_price,
-         previous_sell_price, explicit_discount_amount, price_level, category
+         regular_sell_price, explicit_discount_amount, price_level, category
 ORDER BY {order_clause}
 """
 
@@ -176,7 +166,7 @@ PURCHASE_COLUMNS = (
 
 CLOSE_CASH_SQL = """
 SELECT movement_at, ticket_no, barcode, item_name, payment_method,
-       sell_price, previous_sell_price, explicit_discount_amount, price_level,
+       sell_price, regular_sell_price, explicit_discount_amount, price_level,
        SUM(qty_in) AS qty_in, SUM(qty_out) AS qty_out,
        SUM(total_sold) AS total_sold, SUM(total_bought) AS total_bought,
        category, movement_type
@@ -195,17 +185,7 @@ FROM (
                END ORDER BY pay.payment SEPARATOR ', ')
                FROM payments pay WHERE pay.receipt = r.id), '') AS payment_method,
            tl.price AS sell_price,
-           COALESCE((
-               SELECT prior_tl.price
-               FROM ticketlines prior_tl
-               JOIN receipts prior_r ON prior_r.id = prior_tl.ticket
-               WHERE prior_tl.product = tl.product
-                 AND prior_tl.units <> 0
-                 AND (prior_r.datenew < r.datenew
-                      OR (prior_r.datenew = r.datenew AND prior_tl.id < tl.id))
-               ORDER BY prior_r.datenew DESC, prior_tl.id DESC
-               LIMIT 1
-           ), tl.price) AS previous_sell_price,
+           p.pricesell AS regular_sell_price,
            COALESCE((
                SELECT ABS(discount_tl.units * discount_tl.price)
                FROM ticketlines discount_tl
@@ -292,7 +272,7 @@ WHERE (%(category_id)s IS NULL OR category = %(category_name)s)
   AND (%(search)s = '' OR barcode LIKE %(search_like)s
        OR item_name LIKE %(search_like)s)
 GROUP BY movement_at, ticket_no, barcode, item_name, payment_method,
-         sell_price, previous_sell_price, explicit_discount_amount, price_level,
+         sell_price, regular_sell_price, explicit_discount_amount, price_level,
          category, movement_type
 ORDER BY {order_clause}
 """

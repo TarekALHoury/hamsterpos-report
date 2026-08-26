@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -991,16 +991,16 @@ class ReportApp(ctk.CTk):
             price = self.number(row, "sell_price")
             qty = abs(self.number(row, "qty_sold") or self.number(row, "qty_out"))
             discount = abs(self.number(row, "explicit_discount_amount"))
-            previous = self.number(row, "previous_sell_price")
+            regular = self.number(row, "regular_sell_price")
             if discount > 0:
                 original_total = price * qty + discount
                 percent = (discount / original_total * 100) if original_total else 0
                 row["price_status"] = f"Discount {self.format_money(discount)} ({percent:.1f}%)"
                 row["__sale_status"] = "discount"
-            elif previous > 0 and abs(price - previous) > 0.000001:
-                difference = abs(price - previous)
-                percent = difference / previous * 100
-                if price < previous:
+            elif regular > 0 and abs(price - regular) > 0.000001:
+                difference = abs(price - regular)
+                percent = difference / regular * 100
+                if price < regular:
                     row["price_status"] = f"Discount {self.format_money(difference)} ({percent:.1f}%)"
                     row["__sale_status"] = "discount"
                 else:
