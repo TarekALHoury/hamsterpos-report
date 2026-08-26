@@ -4,6 +4,7 @@ import calendar
 import ctypes
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -15,9 +16,13 @@ from typing import Any
 
 import customtkinter as ctk
 import pymysql
+import arabic_reshaper
+from bidi.algorithm import get_display as bidi_display
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -27,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.10"
+APP_VERSION = "4.0"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -1284,6 +1289,15 @@ class ReportApp(ctk.CTk):
         label = {"sales": "product_sales", "purchases": "purchased_products", "cash": "close_cash_movement"}[self.report_type.get()]
         target = desktop / f"{label}_{stamp}.pdf"
         try:
+            font_dir = Path(os.getenv("WINDIR", r"C:\Windows")) / "Fonts"
+            if "ReportUnicode" not in pdfmetrics.getRegisteredFontNames():
+                regular_font = font_dir / "arial.ttf"
+                bold_font = font_dir / "arialbd.ttf"
+                if not regular_font.exists():
+                    regular_font = font_dir / "segoeui.ttf"
+                    bold_font = font_dir / "segoeuib.ttf"
+                pdfmetrics.registerFont(TTFont("ReportUnicode", str(regular_font)))
+                pdfmetrics.registerFont(TTFont("ReportUnicode-Bold", str(bold_font)))
             styles = getSampleStyleSheet(); title = self.title_label.cget("text")
             doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=10*mm, bottomMargin=10*mm)
             data = [[title for _, title, _ in self.columns]]
@@ -1325,20 +1339,20 @@ class ReportApp(ctk.CTk):
                 pdf_weights.append(base)
             weight_total = sum(pdf_weights)
             widths = [available_width * weight / weight_total for weight in pdf_weights]
-            header_style = ParagraphStyle("ReportHeader", fontName="Helvetica-Bold", fontSize=7,
+            header_style = ParagraphStyle("ReportHeader", fontName="ReportUnicode-Bold", fontSize=7,
                                           leading=8.5, textColor=colors.white, alignment=TA_CENTER)
-            body_center = ParagraphStyle("ReportBodyCenter", fontName="Helvetica", fontSize=7,
+            body_center = ParagraphStyle("ReportBodyCenter", fontName="ReportUnicode", fontSize=7,
                                          leading=8.5, textColor=colors.HexColor("#172033"), alignment=TA_CENTER)
             body_left = ParagraphStyle("ReportBodyLeft", parent=body_center, alignment=TA_LEFT)
             changed_up_center = ParagraphStyle("ChangedUpCenter", parent=body_center,
-                                               fontName="Helvetica-Bold", textColor=colors.HexColor("#166534"))
+                                               fontName="ReportUnicode-Bold", textColor=colors.HexColor("#166534"))
             changed_up_left = ParagraphStyle("ChangedUpLeft", parent=changed_up_center, alignment=TA_LEFT)
             changed_down_center = ParagraphStyle("ChangedDownCenter", parent=body_center,
-                                                 fontName="Helvetica-Bold", textColor=colors.HexColor("#9f1239"))
+                                                 fontName="ReportUnicode-Bold", textColor=colors.HexColor("#9f1239"))
             changed_down_left = ParagraphStyle("ChangedDownLeft", parent=changed_down_center, alignment=TA_LEFT)
             category_style = ParagraphStyle("ReportCategory", parent=header_style, fontSize=10,
                                             leading=12, alignment=TA_LEFT)
-            total_style = ParagraphStyle("ReportTotal", parent=body_center, fontName="Helvetica-Bold",
+            total_style = ParagraphStyle("ReportTotal", parent=body_center, fontName="ReportUnicode-Bold",
                                          textColor=colors.HexColor("#12395b"))
 
             category_set = set(category_rows)
@@ -1347,8 +1361,22 @@ class ReportApp(ctk.CTk):
             sale_statuses = dict(sale_status_rows)
             left_columns = {"item_name", "supplier_name", "payment_method", "price_status"}
 
+            arabic_pattern = re.compile(r"[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]")
+            rtl_styles = {}
+
             def pdf_paragraph(value, style):
-                safe_text = escape("" if value is None else str(value)).replace("\n", "<br/>")
+                raw_text = "" if value is None else str(value)
+                if arabic_pattern.search(raw_text):
+                    raw_text = "\n".join(
+                        bidi_display(arabic_reshaper.reshape(line))
+                        for line in raw_text.splitlines()
+                    )
+                    if style.name not in rtl_styles:
+                        rtl_styles[style.name] = ParagraphStyle(
+                            f"{style.name}RTL", parent=style, alignment=TA_RIGHT,
+                        )
+                    style = rtl_styles[style.name]
+                safe_text = escape(raw_text).replace("\n", "<br/>")
                 return Paragraph(safe_text, style)
 
             wrapped_data = []
@@ -1384,19 +1412,19 @@ class ReportApp(ctk.CTk):
                                      for index, value in enumerate(row_values)])
 
             table = Table(wrapped_data, colWidths=widths, repeatRows=1)
-            table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#16324f")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("FONTNAME", (0,1), (-1,-2), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 7), ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#cbd5e1")), ("ROWBACKGROUNDS", (0,1), (-1,-2), [colors.white, colors.HexColor("#f1f5f9")]), ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#dbeafe")), ("TEXTCOLOR", (0,-1), (-1,-1), colors.HexColor("#12395b")), ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"), ("LINEABOVE", (0,-1), (-1,-1), 1.2, colors.HexColor("#2563eb")), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
+            table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#16324f")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("FONTNAME", (0,0), (-1,0), "ReportUnicode-Bold"), ("FONTNAME", (0,1), (-1,-2), "ReportUnicode"), ("FONTSIZE", (0,0), (-1,-1), 7), ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#cbd5e1")), ("ROWBACKGROUNDS", (0,1), (-1,-2), [colors.white, colors.HexColor("#f1f5f9")]), ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#dbeafe")), ("TEXTCOLOR", (0,-1), (-1,-1), colors.HexColor("#12395b")), ("FONTNAME", (0,-1), (-1,-1), "ReportUnicode-Bold"), ("LINEABOVE", (0,-1), (-1,-1), 1.2, colors.HexColor("#2563eb")), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
             for row_index in category_rows:
                 table.setStyle(TableStyle([("SPAN", (0,row_index), (-1,row_index)),
                                            ("BACKGROUND", (0,row_index), (-1,row_index), colors.HexColor("#1f6aa5")),
                                            ("TEXTCOLOR", (0,row_index), (-1,row_index), colors.white),
-                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold"),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "ReportUnicode-Bold"),
                                            ("FONTSIZE", (0,row_index), (-1,row_index), 10),
                                            ("TOPPADDING", (0,row_index), (-1,row_index), 7),
                                            ("BOTTOMPADDING", (0,row_index), (-1,row_index), 7)]))
             for row_index in category_total_rows:
                 table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), colors.HexColor("#e0f2fe")),
                                            ("TEXTCOLOR", (0,row_index), (-1,row_index), colors.HexColor("#12395b")),
-                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold"),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "ReportUnicode-Bold"),
                                            ("LINEABOVE", (0,row_index), (-1,row_index), 0.8, colors.HexColor("#38bdf8")),
                                            ("TOPPADDING", (0,row_index), (-1,row_index), 6),
                                            ("BOTTOMPADDING", (0,row_index), (-1,row_index), 6)]))
@@ -1406,13 +1434,13 @@ class ReportApp(ctk.CTk):
                 foreground = colors.HexColor("#9f1239" if increase else "#166534")
                 table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), background),
                                            ("TEXTCOLOR", (0,row_index), (-1,row_index), foreground),
-                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold")]))
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "ReportUnicode-Bold")]))
             for row_index, status in sale_status_rows:
                 background = colors.HexColor("#ffe4e6" if status == "discount" else "#dcfce7")
                 foreground = colors.HexColor("#9f1239" if status == "discount" else "#166534")
                 table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), background),
                                            ("TEXTCOLOR", (0,row_index), (-1,row_index), foreground),
-                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold")]))
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "ReportUnicode-Bold")]))
             story = [Paragraph(title, styles["Title"]), Paragraph(f"Generated {datetime.now():%m-%d-%y %H:%M}", styles["Normal"]), Spacer(1, 5*mm), table]
             payment_totals = self.pdf_payment_totals()
             if payment_totals is not None:
