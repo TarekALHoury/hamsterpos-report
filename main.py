@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -553,7 +553,18 @@ class ReportApp(ctk.CTk):
         if self._column_base_widths is None:
             body_font = tkfont.Font(family="Segoe UI", size=10)
             heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+            category_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
             desired_widths = {}
+            first_key = self.columns[0][0]
+            category_labels = {
+                str(row.get("category") or "Uncategorized").upper()
+                for row in self.rows
+            }
+            category_labels.update(f"{name} TOTAL" for name in tuple(category_labels))
+            category_width = max(
+                (category_font.measure(label) + 38 for label in category_labels),
+                default=0,
+            )
             for key, title, configured_width in self.columns:
                 minimum = self.column_minimum(key)
                 heading_width = heading_font.measure(title) + 34
@@ -561,9 +572,13 @@ class ReportApp(ctk.CTk):
                     (body_font.measure(str(self.row_display(row, key))) + 34 for row in self.rows),
                     default=0,
                 )
-                cap = 420 if key == "item_name" else (260 if key in {"payment_method", "price_status", "supplier_name"} else 180)
-                desired_widths[key] = max(minimum, configured_width, heading_width,
-                                          min(content_width, cap))
+                desired_widths[key] = max(minimum, configured_width,
+                                          heading_width, content_width)
+                if key == first_key:
+                    # Group headings and their total labels live in the first
+                    # cell. Give that cell their full measured width instead of
+                    # clipping the text into the next column.
+                    desired_widths[key] = max(desired_widths[key], category_width)
             self._column_base_widths = desired_widths
         desired_widths = self._column_base_widths
 
