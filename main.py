@@ -1,0 +1,1245 @@
+from __future__ import annotations
+
+import calendar
+import ctypes
+import json
+import os
+import sys
+import threading
+import time
+from ctypes import wintypes
+from datetime import date, datetime
+from pathlib import Path
+from tkinter import messagebox, ttk
+from typing import Any
+
+import customtkinter as ctk
+import pymysql
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from xml.sax.saxutils import escape
+
+from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
+                        PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
+
+APP_NAME = "HamsterPOS Reports"
+APP_VERSION = "2.8"
+APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
+CONFIG_FILE = APP_DIR / "settings.json"
+MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
+                 "total_sell_price", "total_sold", "total_bought"}
+PURCHASE_REASONS = {
+    "All reasons": None,
+    "Purchase - Supplier": 1,
+    "Return - Supplier": -2,
+    "Adjust - Add": 4,
+    "Adjust - Minus": -4,
+    "Subtract": -8,
+    "Breakage": -3,
+    "Free": -6,
+    "Sample - Out": -5,
+    "Used": -7,
+    "Transfer": 1000,
+}
+
+
+def resource_path(relative_path: str) -> Path:
+    """Resolve bundled PyInstaller assets and source-run assets."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / relative_path
+
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+
+def _blob(data: bytes) -> tuple[DATA_BLOB, Any]:
+    buffer = ctypes.create_string_buffer(data)
+    return DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte))), buffer
+
+
+def protect(value: str) -> str:
+    """Encrypt a secret for the current Windows user using DPAPI."""
+    if not value:
+        return ""
+    import base64
+    in_blob, keepalive = _blob(value.encode("utf-8"))
+    out_blob = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        raise ctypes.WinError()
+    try:
+        raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return base64.b64encode(raw).decode("ascii")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+
+def unprotect(value: str) -> str:
+    if not value:
+        return ""
+    import base64
+    in_blob, keepalive = _blob(base64.b64decode(value))
+    out_blob = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData).decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+
+def load_config() -> dict[str, Any]:
+    defaults = {"host": "localhost", "port": 3306, "database": "", "username": "", "password": "", "purchase_reason": "1", "currency": "$", "appearance": "Dark"}
+    if not CONFIG_FILE.exists():
+        return defaults
+    try:
+        saved = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        saved["password"] = unprotect(saved.pop("password_protected", ""))
+        return defaults | saved
+    except Exception:
+        return defaults
+
+
+def save_config(config: dict[str, Any]) -> None:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    payload = dict(config)
+    payload["password_protected"] = protect(payload.pop("password", ""))
+    CONFIG_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def db_connect(config: dict[str, Any]):
+    return pymysql.connect(
+        host=config["host"], port=int(config["port"]), user=config["username"],
+        password=config["password"], database=config["database"], charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor, connect_timeout=8, read_timeout=60,
+        autocommit=True,
+    )
+
+
+class DatePicker(ctk.CTkFrame):
+    def __init__(self, parent, initial: date, callback):
+        super().__init__(parent, fg_color=("#ffffff", "#172033"), corner_radius=12,
+                         border_width=1, border_color=("#cbd5e1", "#40506a"))
+        self.callback, self.year, self.month = callback, initial.year, initial.month
+        self.selected_date = initial
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.pack(padx=14, pady=14)
+        self.build_calendar()
+        self.update_calendar()
+        self._outside_binding = self.winfo_toplevel().bind("<Button-1>", self.on_outside_click, add="+")
+
+    def build_calendar(self):
+        header = ctk.CTkFrame(self.body, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=7, sticky="ew", pady=(0, 8))
+        ctk.CTkButton(header, text="<<", width=34, command=lambda: self.move_year(-1)).pack(side="left", padx=(0, 2))
+        ctk.CTkButton(header, text="<", width=34, command=lambda: self.move(-1)).pack(side="left")
+        self.month_label = ctk.CTkLabel(header, text="", font=("Segoe UI", 15, "bold"), width=150)
+        self.month_label.pack(side="left")
+        ctk.CTkButton(header, text=">", width=34, command=lambda: self.move(1)).pack(side="left")
+        ctk.CTkButton(header, text=">>", width=34, command=lambda: self.move_year(1)).pack(side="left", padx=(2, 0))
+        for col, name in enumerate(("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")):
+            ctk.CTkLabel(self.body, text=name, width=34, text_color=("#52647c", "#9fb0c8")).grid(row=1, column=col)
+        self.day_buttons = []
+        for calendar_row in range(2, 8):
+            self.body.grid_rowconfigure(calendar_row, minsize=32)
+        for index in range(42):
+            row, col = 2 + index // 7, index % 7
+            button = ctk.CTkButton(self.body, text="", width=34, height=30,
+                                   fg_color="transparent", hover_color="#1f6aa5",
+                                   text_color=("#172033", "#f1f5f9"))
+            button.grid(row=row, column=col, padx=1, pady=1)
+            self.day_buttons.append(button)
+
+    def update_calendar(self):
+        self.month_label.configure(text=f"{calendar.month_name[self.month]} {self.year}")
+        days = [day for week in calendar.monthcalendar(self.year, self.month) for day in week]
+        days.extend([0] * (42 - len(days)))
+        for button, day in zip(self.day_buttons, days):
+            if day:
+                is_selected = (
+                    self.year == self.selected_date.year
+                    and self.month == self.selected_date.month
+                    and day == self.selected_date.day
+                )
+                button.configure(
+                    text=str(day),
+                    command=lambda d=day: self.pick(d),
+                    fg_color="#1f6aa5" if is_selected else "transparent",
+                    hover_color="#2583c5" if is_selected else ("#d8e8f5", "#29405f"),
+                    text_color="#ffffff" if is_selected else ("#172033", "#f1f5f9"),
+                    border_width=1 if is_selected else 0,
+                    border_color="#7dd3fc" if is_selected else ("#ffffff", "#172033"),
+                )
+                button.grid()
+            else:
+                button.grid_remove()
+
+    def move(self, delta):
+        month = self.month + delta
+        self.year += (month - 1) // 12
+        self.month = (month - 1) % 12 + 1
+        self.update_calendar()
+
+    def move_year(self, delta):
+        self.year += delta
+        self.update_calendar()
+
+    def pick(self, day):
+        self.callback(date(self.year, self.month, day))
+        self.close()
+
+    def on_outside_click(self, event):
+        widget = event.widget
+        if widget is getattr(self.owner_field, "calendar_button", None):
+            return
+        try:
+            left, top = self.winfo_rootx(), self.winfo_rooty()
+            right, bottom = left + self.winfo_width(), top + self.winfo_height()
+            if left <= event.x_root <= right and top <= event.y_root <= bottom:
+                return
+        except Exception:
+            pass
+        self.close()
+
+    def close(self):
+        app = self.winfo_toplevel()
+        if getattr(app, "active_calendar", None) is self:
+            app.active_calendar = None
+        if getattr(self, "_outside_binding", None):
+            app.unbind("<Button-1>", self._outside_binding)
+            self._outside_binding = None
+        self.destroy()
+
+
+class DateTimeField(ctk.CTkFrame):
+    def __init__(self, parent, label: str, initial: datetime):
+        super().__init__(parent, fg_color="transparent")
+        self.value_date = initial.date()
+        ctk.CTkLabel(self, text=label, text_color=("#475569", "#9aa9bd")).pack(anchor="w")
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack()
+        self.date_var = ctk.StringVar(value=self.value_date.strftime("%m-%d-%y"))
+        ctk.CTkEntry(row, textvariable=self.date_var, width=100).pack(side="left", padx=(0, 4))
+        self.calendar_button = ctk.CTkButton(row, text="▦", width=36, command=self.open_picker)
+        self.calendar_button.pack(side="left", padx=(0, 6))
+        self.hour = ctk.CTkEntry(row, width=38); self.hour.insert(0, f"{initial.hour:02d}"); self.hour.pack(side="left")
+        ctk.CTkLabel(row, text=":").pack(side="left")
+        self.minute = ctk.CTkEntry(row, width=38); self.minute.insert(0, f"{initial.minute:02d}"); self.minute.pack(side="left")
+
+    def open_picker(self):
+        try: current = datetime.strptime(self.date_var.get(), "%m-%d-%y").date()
+        except ValueError: current = self.value_date
+        app = self.winfo_toplevel()
+        active = getattr(app, "active_calendar", None)
+        if active is not None and active.winfo_exists():
+            same_field = getattr(active, "owner_field", None) is self
+            active.close()
+            if same_field:
+                return
+        picker = DatePicker(app, current, self.set_date)
+        picker.owner_field = self
+        app.active_calendar = picker
+        app.update_idletasks()
+        x = self.calendar_button.winfo_rootx() - app.winfo_rootx()
+        y = self.calendar_button.winfo_rooty() - app.winfo_rooty() + self.calendar_button.winfo_height() + 4
+        picker.place(x=max(8, min(x, app.winfo_width() - 340)), y=y)
+        picker.lift()
+
+    def set_date(self, value):
+        self.value_date = value
+        self.date_var.set(value.strftime("%m-%d-%y"))
+
+    def set_datetime(self, value: datetime):
+        self.set_date(value.date())
+        self.hour.delete(0, "end"); self.hour.insert(0, f"{value.hour:02d}")
+        self.minute.delete(0, "end"); self.minute.insert(0, f"{value.minute:02d}")
+
+    def get(self) -> datetime:
+        d = datetime.strptime(self.date_var.get().strip(), "%m-%d-%y")
+        hour, minute = int(self.hour.get()), int(self.minute.get())
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59: raise ValueError("Time must be between 00:00 and 23:59")
+        return d.replace(hour=hour, minute=minute, second=0)
+
+
+class SettingsDialog(ctk.CTkToplevel):
+    def __init__(self, parent, config, on_saved):
+        super().__init__(parent)
+        self.config_data, self.on_saved = config, on_saved
+        self.title("Database settings")
+        self.geometry("520x650")
+        self.resizable(False, False)
+        self.transient(parent); self.grab_set()
+        ctk.CTkLabel(self, text="Database connection", font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=30, pady=(28, 4))
+        ctk.CTkLabel(self, text="Saved locally; the password is encrypted for your Windows account.", text_color="#8fa0b7").pack(anchor="w", padx=30, pady=(0, 18))
+        form = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
+        form.pack(fill="both", expand=True, padx=18)
+        self.entries = {}
+        fields = (("host", "Host"), ("port", "Port"), ("database", "Database"), ("username", "Username"), ("password", "Password"), ("currency", "Currency symbol"), ("purchase_reason", "Purchase movement reason (advanced)"))
+        for key, label in fields:
+            ctk.CTkLabel(form, text=label).pack(anchor="w", padx=12, pady=(8, 3))
+            entry = ctk.CTkEntry(form, show="•" if key == "password" else "")
+            entry.insert(0, str(config.get(key, ""))); entry.pack(fill="x", padx=12)
+            self.entries[key] = entry
+        self.status = ctk.CTkLabel(self, text="", text_color="#f0aa5b", height=24); self.status.pack(pady=(6, 0))
+        buttons = ctk.CTkFrame(self, fg_color="transparent"); buttons.pack(fill="x", padx=30, pady=(4, 18))
+        ctk.CTkButton(buttons, text="Test connection", fg_color="#334155", command=self.test).pack(side="left")
+        ctk.CTkButton(buttons, text="Save settings", command=self.save).pack(side="right")
+
+    def values(self):
+        values = {key: entry.get().strip() for key, entry in self.entries.items()}
+        values["port"] = int(values["port"])
+        return values
+
+    def test(self):
+        try:
+            with db_connect(self.values()) as conn:
+                with conn.cursor() as cur: cur.execute("SELECT 1")
+            self.status.configure(text="Connection successful", text_color="#3ecf8e")
+        except Exception as exc: self.status.configure(text=f"Connection failed: {exc}", text_color="#ff6b6b")
+
+    def save(self):
+        try:
+            values = self.values(); save_config(values)
+            self.config_data.clear(); self.config_data.update(values)
+            self.on_saved(); self.destroy()
+        except Exception as exc: messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+
+class ReportApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.config_data = load_config()
+        ctk.set_appearance_mode(self.config_data.get("appearance", "Dark")); ctk.set_default_color_theme("blue")
+        self.title(f"{APP_NAME} — v{APP_VERSION}")
+        try: self.iconbitmap(str(resource_path("assets/app_icon.ico")))
+        except Exception: pass
+        self.geometry("1380x820"); self.minsize(1050, 680)
+        self.rows = []; self.categories = {"All categories": None}; self.cash_sequences = {}
+        self.report_rows_cache = {"sales": [], "purchases": [], "cash": []}
+        self.report_has_run = {"sales": False, "purchases": False, "cash": False}
+        self.render_generation = 0
+        self.active_calendar = None
+        self.report_filter_states = {}
+        self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
+        self.group_categories = ctk.BooleanVar(value=False)
+        self.build_ui()
+        self._style_table(ctk.get_appearance_mode() == "Dark")
+        if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
+        else: self.after(150, self.load_categories)
+
+    def build_ui(self):
+        sidebar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=("#edf2f7", "#101827")); sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
+        ctk.CTkLabel(sidebar, text="HAMSTER", font=("Segoe UI", 12, "bold"), text_color="#38bdf8").pack(anchor="w", padx=24, pady=(30, 0))
+        ctk.CTkLabel(sidebar, text="Reports", font=("Segoe UI", 28, "bold")).pack(anchor="w", padx=24, pady=(0, 32))
+        self.nav_sales = ctk.CTkButton(sidebar, text="  Product Sales", anchor="w", height=46, text_color="#ffffff", command=lambda: self.switch_report("sales")); self.nav_sales.pack(fill="x", padx=14, pady=4)
+        self.nav_purchases = ctk.CTkButton(sidebar, text="  Purchased Products", anchor="w", height=46, fg_color="transparent", text_color=("#172033", "#f1f5f9"), command=lambda: self.switch_report("purchases")); self.nav_purchases.pack(fill="x", padx=14, pady=4)
+        self.nav_cash = ctk.CTkButton(sidebar, text="  Close Cash Movement", anchor="w", height=46, fg_color="transparent", text_color=("#172033", "#f1f5f9"), command=lambda: self.switch_report("cash")); self.nav_cash.pack(fill="x", padx=14, pady=4)
+        theme_box = ctk.CTkFrame(sidebar, fg_color="transparent")
+        theme_box.pack(side="bottom", fill="x", padx=14, pady=(0, 6))
+        ctk.CTkLabel(theme_box, text="Appearance", text_color=("#475569", "#94a3b8")).pack(anchor="w", padx=10)
+        self.theme_menu = ctk.CTkOptionMenu(theme_box, values=["Dark", "Light", "System"], command=self.change_theme)
+        self.theme_menu.set(self.config_data.get("appearance", "Dark")); self.theme_menu.pack(fill="x", pady=4)
+        ctk.CTkButton(sidebar, text="⚙  Database settings", anchor="w", fg_color="transparent", text_color=("#172033", "#f1f5f9"), hover_color=("#d8e2ef", "#263449"), command=self.open_settings).pack(side="bottom", fill="x", padx=14, pady=22)
+
+        main = ctk.CTkFrame(self, corner_radius=0, fg_color=("#f7f9fc", "#0b1120")); main.pack(side="left", fill="both", expand=True)
+        top = ctk.CTkFrame(main, fg_color="transparent"); top.pack(fill="x", padx=28, pady=(24, 12))
+        self.title_label = ctk.CTkLabel(top, text="Product Sales Report", font=("Segoe UI", 25, "bold")); self.title_label.pack(side="left")
+        self.export_btn = ctk.CTkButton(top, text="Export PDF", width=120, fg_color="#334155", command=self.export_pdf); self.export_btn.pack(side="right")
+
+        filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=14); filters.pack(fill="x", padx=28, pady=8)
+        now = datetime.now().replace(second=0, microsecond=0); midnight = now.replace(hour=0, minute=0)
+        self.start_field = DateTimeField(filters, "Start date & time", midnight); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
+        self.end_field = DateTimeField(filters, "End date & time", now); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
+        box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
+        ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd")).pack(anchor="w")
+        self.search_placeholder = "Barcode, name, or reference"
+        self.search_var = ctk.StringVar(value="")
+        search_holder = ctk.CTkFrame(box, height=28, fg_color="transparent")
+        search_holder.pack(fill="x", anchor="w")
+        search_holder.pack_propagate(False)
+        self.search_entry = ctk.CTkEntry(search_holder, textvariable=self.search_var)
+        self.search_entry.pack(fill="both", expand=True)
+        self.search_has_focus = False
+        self.search_hint = ctk.CTkLabel(
+            search_holder, text=self.search_placeholder, height=20,
+            fg_color=self.search_entry.cget("fg_color"),
+            text_color=("#64748b", "#94a3b8"), anchor="w",
+        )
+        self.search_hint.place(x=8, rely=0.5, anchor="w")
+        self.search_hint.bind("<Button-1>", self._focus_search_entry)
+        self.search_entry.bind("<FocusIn>", self._search_focus_in)
+        self.search_entry.bind("<FocusOut>", self._search_focus_out)
+        self.search_var.trace_add("write", self._search_text_changed)
+        filters.grid_columnconfigure(2, weight=1)
+
+        self.cash_filters = ctk.CTkFrame(filters, fg_color="transparent")
+        ctk.CTkLabel(self.cash_filters, text="Close cash sequence", text_color=("#475569", "#9aa9bd")).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ctk.CTkLabel(self.cash_filters, text="Movement", text_color=("#475569", "#9aa9bd")).grid(row=0, column=1, sticky="w")
+        self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410)
+        self.cash_menu.grid(row=1, column=0, padx=(0, 12))
+        self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140)
+        self.movement_menu.set("All"); self.movement_menu.grid(row=1, column=1)
+
+        filter2 = ctk.CTkFrame(main, fg_color="transparent"); filter2.pack(fill="x", padx=28, pady=7)
+        self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170); self.category_menu.pack(side="left", padx=(0, 8))
+        self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165); self.sort_menu.pack(side="left")
+        self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165)
+        self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
+        self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165)
+        self.reason_menu.set("All reasons")
+        self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.render_current_rows, width=145)
+        self.group_check.pack(side="left", padx=(2, 8))
+        self.run_btn = ctk.CTkButton(filter2, text="Run Report", width=145, height=38, command=self.run_report); self.run_btn.pack(side="right")
+        self.refresh_btn = ctk.CTkButton(filter2, text="↻", width=44, height=38, font=("Segoe UI", 22), fg_color=("#d8e2ef", "#334155"), text_color=("#172033", "#ffffff"), hover_color=("#c5d3e3", "#475569"), command=self.refresh_report)
+        self.refresh_btn.pack(side="right", padx=10)
+        self.loading_holder = ctk.CTkFrame(main, height=5, fg_color="transparent")
+        self.loading_holder.pack(fill="x", padx=28, pady=(0, 2))
+        self.loading_holder.pack_propagate(False)
+        self.loading_bar = ctk.CTkProgressBar(self.loading_holder, height=3, corner_radius=0, mode="indeterminate")
+        self.loading_bar.set(0)
+
+        table_frame = ctk.CTkFrame(main, fg_color=("#ffffff", "#111827"), corner_radius=14); table_frame.pack(fill="both", expand=True, padx=28, pady=(8, 12))
+        style = ttk.Style(self); style.theme_use("clam")
+        style.configure("Report.Treeview", background="#111827", fieldbackground="#111827", foreground="#e5edf8", rowheight=34, borderwidth=0, font=("Segoe UI", 10))
+        style.configure("Report.Treeview.Heading", background="#1f2937", foreground="#a9b8cc", borderwidth=0, relief="flat", font=("Segoe UI", 10, "bold"))
+        style.map("Report.Treeview", background=[("selected", "#075985")])
+        self.tree = ttk.Treeview(table_frame, style="Report.Treeview", show="headings")
+        self.tree.tag_configure("category_header", background="#1f6aa5", foreground="#ffffff", font=("Segoe UI", 12, "bold"))
+        self.tree.tag_configure("category_total", background="#dbeafe", foreground="#12395b", font=("Segoe UI", 10, "bold"))
+        self.tree.tag_configure("price_up", background="#12372a", foreground="#bbf7d0")
+        self.tree.tag_configure("price_down", background="#421b24", foreground="#fecdd3")
+        self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
+        self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
+        vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview); hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=(8, 0)); vs.grid(row=0, column=1, sticky="ns", pady=(8, 0)); hs.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
+        self.empty_state = ctk.CTkLabel(
+            table_frame,
+            text="No results found\nTry changing or clearing your filters.",
+            font=("Segoe UI", 15, "bold"),
+            text_color=("#64748b", "#94a3b8"),
+            justify="center",
+        )
+        self._column_resize_job = None
+        self._last_table_width = 0
+        self._last_resize_event = 0.0
+        self.tree.bind("<Configure>", self.schedule_column_resize, add="+")
+        table_frame.grid_rowconfigure(0, weight=1); table_frame.grid_columnconfigure(0, weight=1)
+        footer = ctk.CTkFrame(main, fg_color="transparent"); footer.pack(fill="x", padx=32, pady=(0, 12))
+        self.status = ctk.CTkLabel(footer, text="Ready", text_color=("#52647c", "#8292aa")); self.status.pack(anchor="w")
+        self.totals_frame = ctk.CTkFrame(footer, fg_color="transparent"); self.totals_frame.pack(fill="x", pady=(4, 0))
+        self.total_cards = []
+        self.configure_columns()
+
+    @property
+    def columns(self):
+        return SALES_COLUMNS if self.report_type.get() == "sales" else (PURCHASE_COLUMNS if self.report_type.get() == "purchases" else CLOSE_CASH_COLUMNS)
+
+    def configure_columns(self, schedule_resize=True):
+        self.render_generation += 1
+        self.hide_empty_state()
+        self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
+        for key, title, width in self.columns:
+            align = "w" if key in ("item_name", "supplier_name", "price_status") else "center"
+            self.tree.heading(key, text=title, anchor=align)
+            minimum = self.column_minimum(key)
+            self.tree.column(key, width=max(width, minimum), minwidth=minimum, anchor=align, stretch=False)
+        if schedule_resize:
+            self.after_idle(self.resize_columns)
+
+    def schedule_column_resize(self, event=None):
+        width = event.width if event is not None else self.tree.winfo_width()
+        if abs(width - self._last_table_width) < 8:
+            return
+        self._last_resize_event = time.monotonic()
+        if self._column_resize_job is None:
+            self._column_resize_job = self.after(220, self.finish_resize_when_settled)
+
+    def finish_resize_when_settled(self):
+        quiet_for = time.monotonic() - self._last_resize_event
+        if quiet_for < 0.18:
+            self._column_resize_job = self.after(int((0.18 - quiet_for) * 1000) + 20, self.finish_resize_when_settled)
+            return
+        self.resize_columns()
+
+    def resize_columns(self):
+        if self._column_resize_job is not None:
+            try: self.after_cancel(self._column_resize_job)
+            except Exception: pass
+        self._column_resize_job = None
+        available = max(1, self.tree.winfo_width() - 4)
+        self._last_table_width = available
+        minimums = {key: self.column_minimum(key) for key, _, _ in self.columns}
+        minimum_total = sum(minimums.values())
+        extra = max(0, available - minimum_total)
+        desired_extra = {key: max(0, configured - minimums[key])
+                         for key, _, configured in self.columns}
+        desired_total = sum(desired_extra.values())
+        for key, _, _ in self.columns:
+            share = int(extra * desired_extra[key] / desired_total) if desired_total else 0
+            width = minimums[key] + share
+            self.tree.column(key, width=width, minwidth=minimums[key], stretch=False)
+
+    @staticmethod
+    def column_minimum(key):
+        return {
+            "sold_at": 120, "purchased_at": 120, "movement_at": 120,
+            "ticket_no": 85, "barcode": 105, "item_name": 150,
+            "payment_method": 155, "price_status": 205,
+            "supplier_name": 135,
+        }.get(key, 90)
+
+    def grouped_report_rows(self):
+        groups = {}
+        for row in self.rows:
+            groups.setdefault(row.get("category") or "Uncategorized", []).append(row)
+        category_descending = self.sort_mode.get() == "Category Z–A"
+        names = sorted(groups, key=str.casefold, reverse=category_descending)
+        return [(name, groups[name]) for name in names]
+
+    def render_current_rows(self):
+        self.render_generation += 1
+        generation = self.render_generation
+        self.tree.delete(*self.tree.get_children())
+        if not self.rows:
+            if self.report_has_run.get(self.report_type.get()):
+                self.show_empty_state()
+            return
+        self.hide_empty_state()
+        self.render_rows = []
+        if self.group_categories.get():
+            for category, rows in self.grouped_report_rows():
+                self.render_rows.append(("category", category))
+                self.render_rows.extend(("row", row) for row in rows)
+                self.render_rows.append(("subtotal", (category, rows)))
+        else:
+            self.render_rows.extend(("row", row) for row in self.rows)
+        self._insert_row_batch(0, False, generation, finalize=False)
+
+    def set_window_redraw(self, enabled):
+        """Pause/resume native painting so page switches appear as one frame."""
+        try:
+            hwnd = self.winfo_id()
+            ctypes.windll.user32.SendMessageW(hwnd, 0x000B, int(enabled), 0)  # WM_SETREDRAW
+            if enabled:
+                flags = 0x0001 | 0x0004 | 0x0080 | 0x0100
+                ctypes.windll.user32.RedrawWindow(hwnd, None, None, flags)
+        except Exception:
+            pass
+
+    def populate_cached_rows_immediately(self):
+        self.hide_empty_state()
+        if not self.rows:
+            if self.report_has_run.get(self.report_type.get()):
+                self.show_empty_state()
+            return
+        self.render_rows = []
+        if self.group_categories.get():
+            for category, rows in self.grouped_report_rows():
+                self.render_rows.append(("category", category))
+                self.render_rows.extend(("row", row) for row in rows)
+                self.render_rows.append(("subtotal", (category, rows)))
+        else:
+            self.render_rows.extend(("row", row) for row in self.rows)
+        for row_type, value in self.render_rows:
+            if row_type == "category":
+                values = [value.upper()] + [""] * (len(self.columns) - 1)
+                self.tree.insert("", "end", values=values, tags=("category_header",))
+            elif row_type == "subtotal":
+                category, rows = value
+                self.tree.insert("", "end", values=self.category_total_row(category, rows),
+                                 tags=("category_total",))
+            else:
+                display_values = value.get("__display_values")
+                if display_values is None:
+                    display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
+                tags = self.row_tags(value)
+                self.tree.insert("", "end", values=display_values, tags=tags)
+
+    def configure_payment_filter(self, kind):
+        purchase_methods = ["All payment methods", "Bank", "Cheque", "Cash", "Credit"]
+        all_methods = ["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"]
+        values = purchase_methods if kind == "purchases" else all_methods
+        selected = self.payment_menu.get()
+        self.payment_menu.configure(values=values)
+        self.payment_menu.set(selected if selected in values else "All payment methods")
+        if kind == "purchases":
+            self.reason_menu.pack(side="left", padx=(0, 10), before=self.group_check)
+        else:
+            self.reason_menu.pack_forget()
+
+    def switch_report(self, kind):
+        if self.active_calendar is not None and self.active_calendar.winfo_exists():
+            self.active_calendar.close()
+        if self.report_type.get() == kind:
+            return
+        previous_kind = self.report_type.get()
+        if previous_kind != kind:
+            self.save_report_filters(previous_kind)
+        # Navigation should never leave the shared search field visually focused
+        # on the report being opened.
+        self.focus_set()
+        self.set_window_redraw(False)
+        try:
+            self.report_type.set(kind); self.rows = self.report_rows_cache[kind]
+            self.configure_columns(schedule_resize=False)
+            self.configure_payment_filter(kind)
+            self.restore_report_filters(kind)
+            sales = kind == "sales"
+            title = {"sales": "Product Sales Report", "purchases": "Purchased Products Report", "cash": "Close Cash Movement Report"}[kind]
+            self.title_label.configure(text=title)
+            inactive_text = ("#172033", "#f1f5f9")
+            self.nav_sales.configure(fg_color="#1f6aa5" if sales else "transparent", text_color="#ffffff" if sales else inactive_text)
+            self.nav_purchases.configure(fg_color="#1f6aa5" if kind == "purchases" else "transparent", text_color="#ffffff" if kind == "purchases" else inactive_text)
+            self.nav_cash.configure(fg_color="#1f6aa5" if kind == "cash" else "transparent", text_color="#ffffff" if kind == "cash" else inactive_text)
+            if kind == "cash":
+                self.start_field.grid_remove(); self.end_field.grid_remove()
+                self.cash_filters.grid(row=0, column=0, columnspan=2, padx=18, pady=14, sticky="w")
+                if not self.cash_sequences:
+                    self.after_idle(self.load_cash_sequences)
+            else:
+                self.cash_filters.grid_remove(); self.start_field.grid(); self.end_field.grid()
+            self.resize_columns()
+            self.populate_cached_rows_immediately()
+            empty_loaded = self.report_has_run.get(kind) and not self.rows
+            status_text = (f"{len(self.rows):,} cached rows" if self.rows
+                           else "No results found" if empty_loaded else "Ready")
+            self.status.configure(text=status_text, text_color="#3ecf8e" if self.rows else "#8292aa")
+            self.update_totals()
+            self.update_idletasks()
+        finally:
+            self.set_window_redraw(True)
+
+    def show_empty_state(self):
+        self.empty_state.place(relx=0.5, rely=0.45, anchor="center")
+        self.empty_state.lift()
+
+    def hide_empty_state(self):
+        if hasattr(self, "empty_state"):
+            self.empty_state.place_forget()
+
+    def save_report_filters(self, kind):
+        self.report_filter_states[kind] = {
+            "category": self.category_menu.get(), "sort": self.sort_menu.get(),
+            "payment": self.payment_menu.get(), "search": self.get_search_text(),
+            "reason": self.reason_menu.get(),
+            "group": self.group_categories.get(), "movement": self.movement_menu.get(),
+            "cash": self.cash_menu.get(),
+            "start_date": self.start_field.date_var.get(), "start_hour": self.start_field.hour.get(),
+            "start_minute": self.start_field.minute.get(), "end_date": self.end_field.date_var.get(),
+            "end_hour": self.end_field.hour.get(), "end_minute": self.end_field.minute.get(),
+        }
+
+    @staticmethod
+    def set_entry(entry, value):
+        entry.delete(0, "end"); entry.insert(0, value)
+
+    def set_search_entry(self, value):
+        self.search_var.set(value or "")
+        self._update_search_hint()
+
+    def _focus_search_entry(self, _event=None):
+        self.search_hint.place_forget()
+        self.search_entry.focus_set()
+
+    def _search_focus_in(self, _event=None):
+        self.search_has_focus = True
+        self.search_hint.place_forget()
+
+    def _search_focus_out(self, _event=None):
+        self.search_has_focus = False
+        self._update_search_hint(force_visible=True)
+
+    def _search_text_changed(self, *_args):
+        if self.search_var.get():
+            self.search_hint.place_forget()
+        else:
+            self._update_search_hint()
+
+    def _update_search_hint(self, force_visible=False):
+        if self.search_var.get():
+            self.search_hint.place_forget()
+        elif force_visible or not self.search_has_focus:
+            self.search_hint.place(x=8, rely=0.5, anchor="w")
+
+    def get_search_text(self):
+        return self.search_var.get().strip()
+
+    def restore_report_filters(self, kind):
+        state = self.report_filter_states.get(kind)
+        if state is None:
+            self.category_menu.set("All categories")
+            self.sort_menu.set("Date: newest first")
+            self.payment_menu.set("All payment methods")
+            self.reason_menu.set("All reasons")
+            self.set_search_entry("")
+            self.group_categories.set(False)
+            self.movement_menu.set("All")
+            return
+        self.category_menu.set(state["category"] if state["category"] in self.categories else "All categories")
+        self.sort_menu.set(state["sort"])
+        payment_values = list(self.payment_menu.cget("values"))
+        self.payment_menu.set(state["payment"] if state["payment"] in payment_values else "All payment methods")
+        self.reason_menu.set(state.get("reason", "All reasons") if state.get("reason", "All reasons") in PURCHASE_REASONS else "All reasons")
+        self.set_search_entry(state["search"])
+        self.group_categories.set(state["group"]); self.movement_menu.set(state["movement"])
+        self.cash_menu.set(state["cash"])
+        self.start_field.date_var.set(state["start_date"]); self.set_entry(self.start_field.hour, state["start_hour"]); self.set_entry(self.start_field.minute, state["start_minute"])
+        self.end_field.date_var.set(state["end_date"]); self.set_entry(self.end_field.hour, state["end_hour"]); self.set_entry(self.end_field.minute, state["end_minute"])
+
+    def open_settings(self): SettingsDialog(self, self.config_data, self.after_settings_saved)
+
+    def after_settings_saved(self):
+        for cached_rows in self.report_rows_cache.values():
+            for row in cached_rows:
+                row.pop("__display_values", None)
+        self.render_current_rows()
+        self.load_categories()
+
+    def change_theme(self, mode):
+        ctk.set_appearance_mode(mode)
+        self.config_data["appearance"] = mode
+        try: save_config(self.config_data)
+        except Exception: pass
+        dark = mode == "Dark" or (mode == "System" and ctk.get_appearance_mode() == "Dark")
+        self._style_table(dark)
+
+    def _style_table(self, dark=True):
+        style = ttk.Style(self)
+        style.configure("Report.Treeview", background="#111827" if dark else "#ffffff",
+                        fieldbackground="#111827" if dark else "#ffffff",
+                        foreground="#e5edf8" if dark else "#172033")
+        style.configure("Report.Treeview.Heading", background="#1f2937" if dark else "#e5edf2",
+                        foreground="#a9b8cc" if dark else "#24344d")
+        self.tree.tag_configure("price_up", background="#12372a" if dark else "#dcfce7",
+                                foreground="#bbf7d0" if dark else "#166534")
+        self.tree.tag_configure("price_down", background="#421b24" if dark else "#ffe4e6",
+                                foreground="#fecdd3" if dark else "#9f1239")
+        self.tree.tag_configure("sale_discount", background="#421b24" if dark else "#ffe4e6",
+                                foreground="#fecdd3" if dark else "#9f1239")
+        self.tree.tag_configure("sale_price_change", background="#12372a" if dark else "#dcfce7",
+                                foreground="#bbf7d0" if dark else "#166534")
+        self.tree.tag_configure("category_total", background="#17324d" if dark else "#dbeafe",
+                                foreground="#7dd3fc" if dark else "#12395b",
+                                font=("Segoe UI", 10, "bold"))
+
+    def load_cash_sequences(self):
+        if not self.config_data.get("database"): return
+        try:
+            selected = self.cash_menu.get()
+            with db_connect(self.config_data) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT money, host, hostsequence, datestart, dateend FROM closedcash ORDER BY datestart DESC LIMIT 500")
+                    rows = cur.fetchall()
+            self.cash_sequences = {}
+            for r in rows:
+                end_text = r["dateend"].strftime("%m-%d-%y %H:%M") if r["dateend"] else "Open"
+                label = f"Sequence #{r['hostsequence']}  |  {r['datestart']:%m-%d-%y %H:%M} → {end_text}"
+                self.cash_sequences[label] = r["money"]
+            values = list(self.cash_sequences) or ["No sequences found"]
+            self.cash_menu.configure(values=values)
+            self.cash_menu.set(selected if selected in self.cash_sequences else values[0])
+        except Exception as exc:
+            self.status.configure(text=f"Could not load close cash sequences: {exc}", text_color="#ff7b7b")
+
+    @staticmethod
+    def number(row, key):
+        try: return float(row.get(key) or 0)
+        except (TypeError, ValueError): return 0.0
+
+    def totals_data(self, rows=None):
+        rows = self.rows if rows is None else rows
+        if self.report_type.get() == "sales":
+            buy = sum(self.number(r, "buy_price") for r in rows)
+            sell = sum(self.number(r, "sell_price") for r in rows)
+            qty = sum(self.number(r, "qty_sold") for r in rows)
+            sales = sum(self.number(r, "sales") for r in rows)
+            return [("Buy Price", buy), ("Sell Price", sell), ("QTY Sold", qty), ("Sales", sales)]
+        if self.report_type.get() == "purchases":
+            qty = sum(self.number(r, "qty_purchased") for r in rows)
+            bought = sum(self.number(r, "total_buy_price") for r in rows)
+            return [("QTY Purchased", qty), ("Total Buy Price", bought)]
+        qty_in = sum(self.number(r, "qty_in") for r in rows)
+        qty_out = sum(self.number(r, "qty_out") for r in rows)
+        sold = sum(self.number(r, "total_sold") for r in rows)
+        bought = sum(self.number(r, "total_bought") for r in rows)
+        tickets = len({str(r.get("ticket_no")) for r in rows if r.get("ticket_no") not in (None, "")})
+        return [("Total Tickets", tickets), ("In", qty_in), ("Out", qty_out),
+                ("Total Sold", sold), ("Total Bought", bought)]
+
+    def category_total_row(self, category, rows):
+        totals = dict(self.totals_data(rows))
+        label = f"{category} TOTAL"
+        if self.report_type.get() == "sales":
+            return [label, "", "", "", self.format_money(totals["Buy Price"]),
+                    self.format_money(totals["Sell Price"]), "", f'{totals["QTY Sold"]:,.2f}',
+                    self.format_money(totals["Sales"])]
+        if self.report_type.get() == "purchases":
+            return [label, "", "", "", "", "", f'{totals["QTY Purchased"]:,.2f}',
+                    self.format_money(totals["Total Buy Price"])]
+        return [label, f'{int(totals["Total Tickets"]):,} tickets', "", "", "", "",
+                f'{totals["In"]:,.2f}', f'{totals["Out"]:,.2f}',
+                self.format_money(totals["Total Sold"]), self.format_money(totals["Total Bought"])]
+
+    def payment_totals_data(self):
+        totals = {}
+        amount_key = {"sales": "sales", "purchases": "total_buy_price"}.get(self.report_type.get())
+        for row in self.rows:
+            methods = [part.strip() for part in str(row.get("payment_method") or "").split(",") if part.strip()]
+            if not methods:
+                continue
+            amount = (self.number(row, amount_key) if amount_key
+                      else self.number(row, "total_sold") + self.number(row, "total_bought"))
+            share = amount / len(methods)
+            for method in methods:
+                totals[method] = totals.get(method, 0.0) + share
+        preferred = ["Cash", "Cheque", "Card", "Voucher", "Bank", "Credit",
+                     "Debt", "Free", "VIP Points", "Slip", "Mobile"]
+        ordered = [name for name in preferred if name in totals]
+        ordered.extend(sorted(name for name in totals if name not in preferred))
+        return [(f"Total {name}", totals[name]) for name in ordered]
+
+    def update_totals(self):
+        for card in self.total_cards:
+            card.destroy()
+        self.total_cards.clear()
+        if not self.rows:
+            return
+        base_totals = self.totals_data()
+        all_totals = base_totals + self.payment_totals_data()
+        for index, (label, value) in enumerate(all_totals):
+            is_payment = index >= len(base_totals)
+            card = ctk.CTkFrame(self.totals_frame, fg_color=(("#dcfce7" if is_payment else "#e5edf6"), ("#12372a" if is_payment else "#172033")), corner_radius=9)
+            card.pack(side="left", padx=4)
+            ctk.CTkLabel(card, text=label.upper(), font=("Segoe UI", 9, "bold"), text_color=(("#15803d" if is_payment else "#64748b"), ("#86efac" if is_payment else "#8fa3bd"))).pack(anchor="w", padx=12, pady=(6, 0))
+            money_labels = {"Buy Price", "Sell Price", "Sales", "Total Buy Price", "Total Sold", "Total Bought"}
+            value_text = (self.format_money(value) if is_payment or label in money_labels
+                          else f"{int(value):,}" if label == "Total Tickets" else f"{value:,.2f}")
+            ctk.CTkLabel(card, text=value_text, font=("Segoe UI", 15, "bold"), text_color=(("#166534" if is_payment else "#0f4c81"), ("#bbf7d0" if is_payment else "#67c7ff"))).pack(anchor="w", padx=12, pady=(0, 6))
+            self.total_cards.append(card)
+
+    def pdf_payment_totals(self):
+        entries = self.payment_totals_data()
+        if not entries:
+            return None
+        cells_per_row = 4
+        data = []
+        for start in range(0, len(entries), cells_per_row):
+            chunk = entries[start:start + cells_per_row]
+            chunk += [("", 0)] * (cells_per_row - len(chunk))
+            data.append([label.upper() for label, _ in chunk])
+            data.append([self.format_money(value) if label else "" for label, value in chunk])
+        table = Table(data, colWidths=[(landscape(A4)[0] - 20*mm) / cells_per_row] * cells_per_row)
+        table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#dcfce7")),
+                                   ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor("#166534")),
+                                   ("FONTNAME", (0,0), (-1,-1), "Helvetica-Bold"),
+                                   ("FONTSIZE", (0,0), (-1,-1), 8),
+                                   ("GRID", (0,0), (-1,-1), .35, colors.HexColor("#86b99a")),
+                                   ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                                   ("TOPPADDING", (0,0), (-1,-1), 5),
+                                   ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
+        return table
+
+    def pdf_total_row(self):
+        totals = dict(self.totals_data())
+        if self.report_type.get() == "sales":
+            return ["TOTAL", "", "", "", self.format_money(totals['Buy Price']),
+                    self.format_money(totals['Sell Price']), "", f"{totals['QTY Sold']:,.2f}",
+                    self.format_money(totals['Sales'])]
+        if self.report_type.get() == "purchases":
+            return ["TOTAL", "", "", "", "", "",
+                    f"{totals['QTY Purchased']:,.2f}",
+                    self.format_money(totals['Total Buy Price'])]
+        return ["TOTAL", f"{int(totals['Total Tickets']):,} tickets", "", "", "", "",
+                f"{totals['In']:,.2f}", f"{totals['Out']:,.2f}", self.format_money(totals['Total Sold']),
+                self.format_money(totals['Total Bought'])]
+
+    def load_categories(self):
+        try:
+            with db_connect(self.config_data) as conn:
+                with conn.cursor() as cur: cur.execute("SELECT id, name FROM categories ORDER BY name"); rows = cur.fetchall()
+            self.categories = {"All categories": None} | {row["name"]: row["id"] for row in rows}
+            self.category_menu.configure(values=list(self.categories)); self.category_menu.set("All categories")
+            self.status.configure(text="Database connected")
+            self.load_cash_sequences()
+        except Exception as exc: self.status.configure(text=f"Database unavailable: {exc}", text_color="#ff7b7b")
+
+    def query_parameters(self):
+        search = self.get_search_text()
+        reason = str(self.config_data.get("purchase_reason", "1")).strip()
+        selected_payment = self.payment_menu.get()
+        common = {"category_id": self.categories.get(self.category_menu.get()), "category_name": None if self.category_menu.get() == "All categories" else self.category_menu.get(), "payment_method": "All" if selected_payment == "All payment methods" else selected_payment, "reason": PURCHASE_REASONS.get(self.reason_menu.get()), "search": search, "search_like": f"%{search}%", "purchase_reason": int(reason) if reason else None}
+        if self.report_type.get() == "cash":
+            money = self.cash_sequences.get(self.cash_menu.get())
+            if not money: raise ValueError("Select a close cash sequence")
+            return common | {"money": money, "movement_filter": self.movement_menu.get()}
+        start, end = self.start_field.get(), self.end_field.get()
+        if start > end: raise ValueError("Start date/time must be before end date/time")
+        return common | {"start_at": start, "end_at": end}
+
+    def order_clause(self):
+        return {"Date: newest first": "1 DESC", "Date: oldest first": "1 ASC", "Category A–Z": "category ASC, 1 DESC", "Category Z–A": "category DESC, 1 DESC"}[self.sort_mode.get()]
+
+    def run_report(self, refreshing=False):
+        try: params = self.query_parameters()
+        except Exception as exc: messagebox.showerror(APP_NAME, str(exc)); return
+        self.hide_empty_state()
+        kind = self.report_type.get()
+        template = {"sales": SALES_SQL, "purchases": PURCHASES_SQL, "cash": CLOSE_CASH_SQL}[kind]
+        query = template.format(order_clause=self.order_clause())
+        column_keys = [column[0] for column in self.columns]
+        self.run_btn.configure(state="disabled", text="Run Report"); self.refresh_btn.configure(state="disabled")
+        self.status.configure(text="Refreshing all data…" if refreshing else "Loading report…", text_color="#3b82f6")
+        self.load_started = time.monotonic()
+        self.loading_bar.pack(fill="x", pady=1)
+        self.loading_bar.start()
+        threading.Thread(target=self._query_worker, args=(kind, query, params, column_keys, refreshing), daemon=True).start()
+
+    def refresh_report(self):
+        # Refresh is also the report's reset action: return every filter to its
+        # predictable default before fetching the newest database state.
+        now = datetime.now().replace(second=0, microsecond=0)
+        self.start_field.set_datetime(now.replace(hour=0, minute=0))
+        self.end_field.set_datetime(now)
+        self.category_menu.set("All categories")
+        self.sort_menu.set("Date: newest first")
+        self.payment_menu.set("All payment methods")
+        self.reason_menu.set("All reasons")
+        self.set_search_entry("")
+        self.group_categories.set(False)
+        self.movement_menu.set("All")
+        if self.report_type.get() == "cash" and self.cash_sequences:
+            self.cash_menu.set(next(iter(self.cash_sequences)))
+        self.report_filter_states.pop(self.report_type.get(), None)
+        self.run_report(refreshing=True)
+
+    def _query_worker(self, kind, query, params, column_keys, refreshing):
+        try:
+            with db_connect(self.config_data) as conn:
+                conn.ping(reconnect=True)
+                with conn.cursor() as cur: cur.execute(query, params); rows = cur.fetchall()
+                if kind == "purchases":
+                    self.mark_purchase_price_changes(rows)
+                elif kind in ("sales", "cash"):
+                    self.mark_sale_price_status(rows)
+                for row in rows:
+                    row["__display_values"] = tuple(self.row_display(row, key) for key in column_keys)
+                categories = cash_rows = None
+                if refreshing:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id, name FROM categories ORDER BY name")
+                        categories = cur.fetchall()
+                        cur.execute("SELECT money, hostsequence, datestart, dateend FROM closedcash ORDER BY datestart DESC LIMIT 500")
+                        cash_rows = cur.fetchall()
+            self.after(0, lambda: self.finish_query_smooth(kind, rows, categories, cash_rows, refreshing))
+        except Exception as exc: self.after(0, lambda e=exc: self.query_failed(e))
+
+    def finish_query_smooth(self, kind, rows, categories, cash_rows, refreshed):
+        minimum_ms = 550 if refreshed else 220
+        elapsed_ms = int((time.monotonic() - self.load_started) * 1000)
+        wait_ms = max(0, minimum_ms - elapsed_ms)
+        self.after(wait_ms, lambda: self.show_rows(kind, rows, categories, cash_rows, refreshed))
+
+    def query_failed(self, exc):
+        self.stop_loading()
+        self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
+        self.status.configure(text=f"Report failed: {exc}", text_color="#ff7b7b")
+        messagebox.showerror(APP_NAME, str(exc))
+
+    def format_money(self, value):
+        symbol = str(self.config_data.get("currency", "$") or "$").strip()
+        separator = "" if len(symbol) == 1 else " "
+        return f"{symbol}{separator}{float(value or 0):,.2f}"
+
+    def display(self, value, key=None):
+        if isinstance(value, datetime): return value.strftime("%m-%d-%y %H:%M")
+        if key in MONEY_COLUMNS: return self.format_money(value)
+        if isinstance(value, float): return f"{value:,.2f}"
+        return "" if value is None else str(value)
+
+    def row_display(self, row, key, pdf=False):
+        value = self.display(row.get(key), key)
+        change = row.get("__price_change", 0)
+        if key == "buy_price" and change:
+            marker = ("UP - CHANGED" if change > 0 else "DOWN - CHANGED") if pdf else ("▲ Changed" if change > 0 else "▼ Changed")
+            return f"{value}  {marker}"
+        return value
+
+    @staticmethod
+    def row_tags(row):
+        if row.get("__sale_status") == "discount":
+            return ("sale_discount",)
+        if row.get("__sale_status") == "changed":
+            return ("sale_price_change",)
+        change = row.get("__price_change", 0)
+        return ("price_up",) if change > 0 else (("price_down",) if change < 0 else ())
+
+    def mark_sale_price_status(self, rows):
+        for row in rows:
+            if row.get("movement_type") not in (None, "Sold"):
+                row["price_status"] = "—"
+                row.pop("__sale_status", None)
+                continue
+            price = self.number(row, "sell_price")
+            qty = abs(self.number(row, "qty_sold") or self.number(row, "qty_out"))
+            discount = abs(self.number(row, "explicit_discount_amount"))
+            previous = self.number(row, "previous_sell_price")
+            if discount > 0:
+                original_total = price * qty + discount
+                percent = (discount / original_total * 100) if original_total else 0
+                row["price_status"] = f"Discount {self.format_money(discount)} ({percent:.1f}%)"
+                row["__sale_status"] = "discount"
+            elif previous > 0 and abs(price - previous) > 0.000001:
+                difference = abs(price - previous)
+                percent = difference / previous * 100
+                if price < previous:
+                    row["price_status"] = f"Discount {self.format_money(difference)} ({percent:.1f}%)"
+                    row["__sale_status"] = "discount"
+                else:
+                    row["price_status"] = f"Price +{self.format_money(difference)} ({percent:.1f}%)"
+                    row["__sale_status"] = "changed"
+            else:
+                row["price_status"] = "Regular"
+                row.pop("__sale_status", None)
+
+    def mark_purchase_price_changes(self, rows):
+        """Mark displayed purchases whose price differs from the preceding one."""
+        previous = {}
+        chronological = sorted(
+            enumerate(rows),
+            key=lambda item: (
+                str(item[1].get("barcode") or ""),
+                item[1].get("purchased_at") or datetime.min,
+                item[0],
+            ),
+        )
+        for _, row in chronological:
+            row.pop("__price_change", None)
+            product = str(row.get("barcode") or row.get("item_name") or "")
+            price = self.number(row, "buy_price")
+            if product in previous and abs(price - previous[product]) > 0.000001:
+                row["__price_change"] = 1 if price > previous[product] else -1
+            previous[product] = price
+
+    def stop_loading(self):
+        self.loading_bar.stop()
+        self.loading_bar.set(0)
+        self.loading_bar.pack_forget()
+
+    def show_rows(self, kind, rows, categories=None, cash_rows=None, refreshed=False):
+        self.report_rows_cache[kind] = rows
+        self.report_has_run[kind] = True
+        if categories is not None:
+            selected = self.category_menu.get()
+            new_categories = {"All categories": None} | {row["name"]: row["id"] for row in categories}
+            if new_categories != self.categories:
+                self.categories = new_categories
+                self.category_menu.configure(values=list(self.categories))
+                self.category_menu.set(selected if selected in self.categories else "All categories")
+        if cash_rows is not None:
+            selected_cash = self.cash_menu.get()
+            new_cash_sequences = {}
+            for row in cash_rows:
+                end_text = row["dateend"].strftime("%m-%d-%y %H:%M") if row["dateend"] else "Open"
+                label = f"Sequence #{row['hostsequence']}  |  {row['datestart']:%m-%d-%y %H:%M} → {end_text}"
+                new_cash_sequences[label] = row["money"]
+            if new_cash_sequences != self.cash_sequences:
+                self.cash_sequences = new_cash_sequences
+                values = list(self.cash_sequences) or ["No sequences found"]
+                self.cash_menu.configure(values=values)
+                self.cash_menu.set(selected_cash if selected_cash in self.cash_sequences else values[0])
+        if kind != self.report_type.get():
+            self.stop_loading()
+            self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
+            return
+        self.rows = rows
+        if rows:
+            self.hide_empty_state()
+        else:
+            self.show_empty_state()
+        self.render_generation += 1
+        generation = self.render_generation
+        self.tree.delete(*self.tree.get_children())
+        self.render_rows = []
+        if self.group_categories.get():
+            for category, grouped_rows in self.grouped_report_rows():
+                self.render_rows.append(("category", category))
+                self.render_rows.extend(("row", row) for row in grouped_rows)
+                self.render_rows.append(("subtotal", (category, grouped_rows)))
+        else:
+            self.render_rows.extend(("row", row) for row in self.rows)
+        self._insert_row_batch(0, refreshed, generation, finalize=True)
+
+    def _insert_row_batch(self, start, refreshed, generation, finalize):
+        if generation != self.render_generation:
+            return
+        batch_size = 600 if len(self.render_rows) > 1500 else 350
+        end = min(start + batch_size, len(self.render_rows))
+        for row_type, value in self.render_rows[start:end]:
+            if row_type == "category":
+                values = [value.upper()] + [""] * (len(self.columns) - 1)
+                self.tree.insert("", "end", values=values, tags=("category_header",))
+            elif row_type == "subtotal":
+                category, rows = value
+                self.tree.insert("", "end", values=self.category_total_row(category, rows),
+                                 tags=("category_total",))
+            else:
+                display_values = value.get("__display_values")
+                if display_values is None:
+                    display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
+                tags = self.row_tags(value)
+                self.tree.insert("", "end", values=display_values, tags=tags)
+        if end < len(self.render_rows):
+            self.after(1, lambda: self._insert_row_batch(end, refreshed, generation, finalize))
+            return
+        if not finalize:
+            self.update_totals()
+            return
+        self.stop_loading()
+        self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
+        action = "refreshed" if refreshed else "loaded"
+        if self.rows:
+            self.status.configure(text=f"{len(self.rows):,} rows {action} · {datetime.now():%H:%M:%S}", text_color="#3ecf8e")
+        else:
+            self.status.configure(text=f"No results found · {datetime.now():%H:%M:%S}",
+                                  text_color=("#64748b", "#94a3b8"))
+        self.update_totals()
+
+    def export_pdf(self):
+        if not self.rows: messagebox.showinfo(APP_NAME, "Run a report before exporting."); return
+        desktop = Path(os.getenv("USERPROFILE", Path.home())) / "Desktop"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = {"sales": "product_sales", "purchases": "purchased_products", "cash": "close_cash_movement"}[self.report_type.get()]
+        target = desktop / f"{label}_{stamp}.pdf"
+        try:
+            styles = getSampleStyleSheet(); title = self.title_label.cget("text")
+            doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=10*mm, bottomMargin=10*mm)
+            data = [[title for _, title, _ in self.columns]]
+            category_rows = []
+            category_total_rows = []
+            changed_price_rows = []
+            sale_status_rows = []
+            if self.group_categories.get():
+                for category, grouped_rows in self.grouped_report_rows():
+                    category_rows.append(len(data))
+                    data.append([category.upper()] + [""] * (len(self.columns) - 1))
+                    for row in grouped_rows:
+                        if row.get("__price_change"):
+                            changed_price_rows.append((len(data), row["__price_change"]))
+                        if row.get("__sale_status"):
+                            sale_status_rows.append((len(data), row["__sale_status"]))
+                        data.append([self.row_display(row, key, pdf=True) for key, _, _ in self.columns])
+                    category_total_rows.append(len(data))
+                    data.append(self.category_total_row(category, grouped_rows))
+            else:
+                for row in self.rows:
+                    if row.get("__price_change"):
+                        changed_price_rows.append((len(data), row["__price_change"]))
+                    if row.get("__sale_status"):
+                        sale_status_rows.append((len(data), row["__sale_status"]))
+                    data.append([self.row_display(row, key, pdf=True) for key, _, _ in self.columns])
+            data.append(self.pdf_total_row())
+            available_width = landscape(A4)[0] - 20*mm
+            widths = [available_width / len(self.columns)] * len(self.columns)
+            header_style = ParagraphStyle("ReportHeader", fontName="Helvetica-Bold", fontSize=7,
+                                          leading=8.5, textColor=colors.white, alignment=TA_CENTER)
+            body_center = ParagraphStyle("ReportBodyCenter", fontName="Helvetica", fontSize=7,
+                                         leading=8.5, textColor=colors.HexColor("#172033"), alignment=TA_CENTER)
+            body_left = ParagraphStyle("ReportBodyLeft", parent=body_center, alignment=TA_LEFT)
+            changed_up_center = ParagraphStyle("ChangedUpCenter", parent=body_center,
+                                               fontName="Helvetica-Bold", textColor=colors.HexColor("#166534"))
+            changed_up_left = ParagraphStyle("ChangedUpLeft", parent=changed_up_center, alignment=TA_LEFT)
+            changed_down_center = ParagraphStyle("ChangedDownCenter", parent=body_center,
+                                                 fontName="Helvetica-Bold", textColor=colors.HexColor("#9f1239"))
+            changed_down_left = ParagraphStyle("ChangedDownLeft", parent=changed_down_center, alignment=TA_LEFT)
+            category_style = ParagraphStyle("ReportCategory", parent=header_style, fontSize=10,
+                                            leading=12, alignment=TA_LEFT)
+            total_style = ParagraphStyle("ReportTotal", parent=body_center, fontName="Helvetica-Bold",
+                                         textColor=colors.HexColor("#12395b"))
+
+            category_set = set(category_rows)
+            category_total_set = set(category_total_rows)
+            changed_directions = dict(changed_price_rows)
+            sale_statuses = dict(sale_status_rows)
+            left_columns = {"item_name", "supplier_name", "payment_method", "price_status"}
+
+            def pdf_paragraph(value, style):
+                safe_text = escape("" if value is None else str(value)).replace("\n", "<br/>")
+                return Paragraph(safe_text, style)
+
+            wrapped_data = []
+            last_row = len(data) - 1
+            for row_index, row_values in enumerate(data):
+                if row_index == 0:
+                    row_styles = [header_style] * len(self.columns)
+                elif row_index in category_set:
+                    row_styles = [category_style] * len(self.columns)
+                elif row_index in category_total_set:
+                    row_styles = [total_style] * len(self.columns)
+                elif row_index == last_row:
+                    row_styles = [total_style] * len(self.columns)
+                else:
+                    direction = changed_directions.get(row_index)
+                    sale_status = sale_statuses.get(row_index)
+                    lowered = direction is not None and direction < 0 or sale_status == "discount"
+                    raised = direction is not None and direction > 0 or sale_status == "changed"
+                    row_styles = []
+                    for key, _, _ in self.columns:
+                        is_left = key in left_columns
+                        if lowered:
+                            row_styles.append(changed_down_left if is_left else changed_down_center)
+                        elif raised:
+                            row_styles.append(changed_up_left if is_left else changed_up_center)
+                        else:
+                            row_styles.append(body_left if is_left else body_center)
+                wrapped_data.append([pdf_paragraph(value, row_styles[index])
+                                     for index, value in enumerate(row_values)])
+
+            table = Table(wrapped_data, colWidths=widths, repeatRows=1)
+            table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#16324f")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("FONTNAME", (0,1), (-1,-2), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 7), ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#cbd5e1")), ("ROWBACKGROUNDS", (0,1), (-1,-2), [colors.white, colors.HexColor("#f1f5f9")]), ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#dbeafe")), ("TEXTCOLOR", (0,-1), (-1,-1), colors.HexColor("#12395b")), ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"), ("LINEABOVE", (0,-1), (-1,-1), 1.2, colors.HexColor("#2563eb")), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
+            for row_index in category_rows:
+                table.setStyle(TableStyle([("SPAN", (0,row_index), (-1,row_index)),
+                                           ("BACKGROUND", (0,row_index), (-1,row_index), colors.HexColor("#1f6aa5")),
+                                           ("TEXTCOLOR", (0,row_index), (-1,row_index), colors.white),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold"),
+                                           ("FONTSIZE", (0,row_index), (-1,row_index), 10),
+                                           ("TOPPADDING", (0,row_index), (-1,row_index), 7),
+                                           ("BOTTOMPADDING", (0,row_index), (-1,row_index), 7)]))
+            for row_index in category_total_rows:
+                table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), colors.HexColor("#e0f2fe")),
+                                           ("TEXTCOLOR", (0,row_index), (-1,row_index), colors.HexColor("#12395b")),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold"),
+                                           ("LINEABOVE", (0,row_index), (-1,row_index), 0.8, colors.HexColor("#38bdf8")),
+                                           ("TOPPADDING", (0,row_index), (-1,row_index), 6),
+                                           ("BOTTOMPADDING", (0,row_index), (-1,row_index), 6)]))
+            for row_index, direction in changed_price_rows:
+                background = colors.HexColor("#dcfce7" if direction > 0 else "#ffe4e6")
+                foreground = colors.HexColor("#166534" if direction > 0 else "#9f1239")
+                table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), background),
+                                           ("TEXTCOLOR", (0,row_index), (-1,row_index), foreground),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold")]))
+            for row_index, status in sale_status_rows:
+                background = colors.HexColor("#ffe4e6" if status == "discount" else "#dcfce7")
+                foreground = colors.HexColor("#9f1239" if status == "discount" else "#166534")
+                table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), background),
+                                           ("TEXTCOLOR", (0,row_index), (-1,row_index), foreground),
+                                           ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold")]))
+            story = [Paragraph(title, styles["Title"]), Paragraph(f"Generated {datetime.now():%m-%d-%y %H:%M}", styles["Normal"]), Spacer(1, 5*mm), table]
+            payment_totals = self.pdf_payment_totals()
+            if payment_totals is not None:
+                story.extend([Spacer(1, 3*mm), Paragraph("Payment Method Totals", styles["Heading3"]), payment_totals])
+            doc.build(story); self.status.configure(text=f"Saved PDF: {target}", text_color="#3ecf8e")
+            messagebox.showinfo(APP_NAME, f"PDF saved to:\n{target}")
+        except Exception as exc: messagebox.showerror(APP_NAME, f"Could not create PDF:\n{exc}")
+
+
+if __name__ == "__main__":
+    ReportApp().mainloop()
