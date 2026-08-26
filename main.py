@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "2.12"
+APP_VERSION = "2.13"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -220,19 +220,28 @@ class DatePicker(ctk.CTkFrame):
 
 
 class DateTimeField(ctk.CTkFrame):
-    def __init__(self, parent, label: str, initial: datetime):
+    def __init__(self, parent, label: str, initial: datetime, on_user_change=None):
         super().__init__(parent, fg_color="transparent")
+        self.on_user_change = on_user_change
         self.value_date = initial.date()
         ctk.CTkLabel(self, text=label, text_color=("#475569", "#9aa9bd")).pack(anchor="w")
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack()
         self.date_var = ctk.StringVar(value=self.value_date.strftime("%m-%d-%y"))
-        ctk.CTkEntry(row, textvariable=self.date_var, width=100).pack(side="left", padx=(0, 4))
+        self.date_entry = ctk.CTkEntry(row, textvariable=self.date_var, width=100)
+        self.date_entry.pack(side="left", padx=(0, 4))
         self.calendar_button = ctk.CTkButton(row, text="▦", width=36, command=self.open_picker)
         self.calendar_button.pack(side="left", padx=(0, 6))
         self.hour = ctk.CTkEntry(row, width=38); self.hour.insert(0, f"{initial.hour:02d}"); self.hour.pack(side="left")
         ctk.CTkLabel(row, text=":").pack(side="left")
         self.minute = ctk.CTkEntry(row, width=38); self.minute.insert(0, f"{initial.minute:02d}"); self.minute.pack(side="left")
+        for entry in (self.date_entry, self.hour, self.minute):
+            entry.bind("<KeyPress>", self.user_changed)
+            entry.bind("<<Paste>>", self.user_changed)
+
+    def user_changed(self, _event=None):
+        if self.on_user_change:
+            self.on_user_change()
 
     def open_picker(self):
         try: current = datetime.strptime(self.date_var.get(), "%m-%d-%y").date()
@@ -244,7 +253,7 @@ class DateTimeField(ctk.CTkFrame):
             active.close()
             if same_field:
                 return
-        picker = DatePicker(app, current, self.set_date)
+        picker = DatePicker(app, current, self.set_date_from_picker)
         picker.owner_field = self
         app.active_calendar = picker
         app.update_idletasks()
@@ -256,6 +265,10 @@ class DateTimeField(ctk.CTkFrame):
     def set_date(self, value):
         self.value_date = value
         self.date_var.set(value.strftime("%m-%d-%y"))
+
+    def set_date_from_picker(self, value):
+        self.user_changed()
+        self.set_date(value)
 
     def set_datetime(self, value: datetime):
         self.set_date(value.date())
@@ -328,10 +341,12 @@ class ReportApp(ctk.CTk):
         self.render_generation = 0
         self.active_calendar = None
         self.report_filter_states = {}
+        self.end_time_live = True
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
         self._style_table(ctk.get_appearance_mode() == "Dark")
+        self.after(1000, self.update_live_end_time)
         if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
 
@@ -357,7 +372,7 @@ class ReportApp(ctk.CTk):
         filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=14); filters.pack(fill="x", padx=28, pady=8)
         now = datetime.now().replace(second=0, microsecond=0); midnight = now.replace(hour=0, minute=0)
         self.start_field = DateTimeField(filters, "Start date & time", midnight); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
-        self.end_field = DateTimeField(filters, "End date & time", now); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
+        self.end_field = DateTimeField(filters, "End date & time", now, self.disable_live_end_time); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
         box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
         ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd")).pack(anchor="w")
         self.search_placeholder = "Barcode, name, or reference"
@@ -640,6 +655,7 @@ class ReportApp(ctk.CTk):
             "start_date": self.start_field.date_var.get(), "start_hour": self.start_field.hour.get(),
             "start_minute": self.start_field.minute.get(), "end_date": self.end_field.date_var.get(),
             "end_hour": self.end_field.hour.get(), "end_minute": self.end_field.minute.get(),
+            "end_live": self.end_time_live,
         }
 
     @staticmethod
@@ -687,6 +703,8 @@ class ReportApp(ctk.CTk):
             self.set_search_entry("")
             self.group_categories.set(False)
             self.movement_menu.set("All")
+            self.end_time_live = True
+            self.end_field.set_datetime(datetime.now().replace(second=0, microsecond=0))
             return
         self.category_menu.set(state["category"] if state["category"] in self.categories else "All categories")
         self.sort_menu.set(state["sort"])
@@ -698,6 +716,22 @@ class ReportApp(ctk.CTk):
         self.cash_menu.set(state["cash"])
         self.start_field.date_var.set(state["start_date"]); self.set_entry(self.start_field.hour, state["start_hour"]); self.set_entry(self.start_field.minute, state["start_minute"])
         self.end_field.date_var.set(state["end_date"]); self.set_entry(self.end_field.hour, state["end_hour"]); self.set_entry(self.end_field.minute, state["end_minute"])
+        self.end_time_live = state.get("end_live", True)
+        if self.end_time_live:
+            self.end_field.set_datetime(datetime.now().replace(second=0, microsecond=0))
+
+    def disable_live_end_time(self):
+        self.end_time_live = False
+
+    def update_live_end_time(self):
+        if self.end_time_live:
+            now = datetime.now().replace(second=0, microsecond=0)
+            current_parts = (self.end_field.date_var.get(), self.end_field.hour.get(),
+                             self.end_field.minute.get())
+            wanted_parts = (now.strftime("%m-%d-%y"), f"{now.hour:02d}", f"{now.minute:02d}")
+            if current_parts != wanted_parts:
+                self.end_field.set_datetime(now)
+        self.after(15000, self.update_live_end_time)
 
     def open_settings(self): SettingsDialog(self, self.config_data, self.after_settings_saved)
 
@@ -913,6 +947,7 @@ class ReportApp(ctk.CTk):
         # Refresh is also the report's reset action: return every filter to its
         # predictable default before fetching the newest database state.
         now = datetime.now().replace(second=0, microsecond=0)
+        self.end_time_live = True
         self.start_field.set_datetime(now.replace(hour=0, minute=0))
         self.end_field.set_datetime(now)
         self.category_menu.set("All categories")
