@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.0"
+APP_VERSION = "4.1"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -479,7 +479,7 @@ class ReportApp(ctk.CTk):
         self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
         self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165)
         self.reason_menu.set("All reasons")
-        self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.render_current_rows, width=145)
+        self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145)
         self.group_check.pack(side="left", padx=(2, 8))
         self.run_btn = ctk.CTkButton(filter2, text="Run Report", width=145, height=38, command=self.run_report); self.run_btn.pack(side="right")
         self.refresh_btn = ctk.CTkButton(filter2, text="↻", width=44, height=38, font=("Segoe UI", 22), fg_color=("#d8e2ef", "#334155"), text_color=("#172033", "#ffffff"), hover_color=("#c5d3e3", "#475569"), command=self.refresh_report)
@@ -565,15 +565,17 @@ class ReportApp(ctk.CTk):
             category_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
             desired_widths = {}
             first_key = self.columns[0][0]
-            category_labels = {
-                str(row.get("category") or "Uncategorized").upper()
-                for row in self.rows
-            }
-            category_labels.update(f"{name} TOTAL" for name in tuple(category_labels))
-            category_width = max(
-                (category_font.measure(label) + 38 for label in category_labels),
-                default=0,
-            )
+            category_width = 0
+            if self.group_categories.get():
+                category_labels = {
+                    str(row.get("category") or "Uncategorized").upper()
+                    for row in self.rows
+                }
+                category_labels.update(f"{name} TOTAL" for name in tuple(category_labels))
+                category_width = max(
+                    (category_font.measure(label) + 38 for label in category_labels),
+                    default=0,
+                )
             for key, title, configured_width in self.columns:
                 minimum = self.column_minimum(key)
                 heading_width = heading_font.measure(title) + 34
@@ -626,6 +628,11 @@ class ReportApp(ctk.CTk):
         category_descending = self.sort_mode.get() == "Category Z–A"
         names = sorted(groups, key=str.casefold, reverse=category_descending)
         return [(name, groups[name]) for name in names]
+
+    def toggle_category_grouping(self):
+        self._column_base_widths = None
+        self.resize_columns()
+        self.render_current_rows()
 
     def render_current_rows(self):
         self.render_generation += 1
