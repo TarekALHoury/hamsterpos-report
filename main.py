@@ -10,7 +10,7 @@ import time
 from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import font as tkfont, messagebox, ttk
 from typing import Any
 
 import customtkinter as ctk
@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -491,17 +491,30 @@ class ReportApp(ctk.CTk):
             except Exception: pass
         self._column_resize_job = None
         self._last_table_width = max(1, self.tree.winfo_width() - 4)
-        longest_item_name = max(
-            (len(str(row.get("item_name") or "")) for row in self.rows),
-            default=0,
-        )
-        for key, _, _ in self.columns:
+        body_font = tkfont.Font(family="Segoe UI", size=10)
+        heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        desired_widths = {}
+        for key, title, configured_width in self.columns:
             minimum = self.column_minimum(key)
-            # Keep every column compact. Only product names receive additional
-            # width, and only when the current result actually contains a long name.
-            width = (max(minimum, min(360, longest_item_name * 7 + 28))
-                     if key == "item_name" else minimum)
-            self.tree.column(key, width=width, minwidth=minimum, stretch=False)
+            # Measure both the heading and visible data. This prevents adjacent
+            # headings/values from appearing joined at any window size.
+            heading_width = heading_font.measure(title) + 34
+            content_width = max(
+                (body_font.measure(str(self.row_display(row, key))) + 34 for row in self.rows),
+                default=0,
+            )
+            cap = 420 if key == "item_name" else (260 if key in {"payment_method", "price_status", "supplier_name"} else 180)
+            desired_widths[key] = max(minimum, configured_width, heading_width,
+                                      min(content_width, cap))
+
+        # Fill spare room evenly, while retaining a wider virtual table and its
+        # horizontal scrollbar when the window is narrower than the safe widths.
+        spare = max(0, self._last_table_width - sum(desired_widths.values()))
+        extra_each, remainder = divmod(spare, max(1, len(desired_widths)))
+        for index, (key, width) in enumerate(desired_widths.items()):
+            final_width = width + extra_each + (1 if index < remainder else 0)
+            self.tree.column(key, width=final_width, minwidth=self.column_minimum(key),
+                             stretch=False)
 
     @staticmethod
     def column_minimum(key):
@@ -1195,7 +1208,19 @@ class ReportApp(ctk.CTk):
                     data.append([self.row_display(row, key, pdf=True) for key, _, _ in self.columns])
             data.append(self.pdf_total_row())
             available_width = landscape(A4)[0] - 20*mm
-            widths = [available_width / len(self.columns)] * len(self.columns)
+            # Preserve useful relative widths in PDF and let long text wrap.
+            # Equal-width columns made Payment Method/Price Status collide while
+            # leaving too much room for short numeric fields.
+            pdf_weights = []
+            for key, title, configured_width in self.columns:
+                base = max(configured_width, self.column_minimum(key))
+                if key == "item_name":
+                    base = max(base, 190)
+                elif key in {"payment_method", "price_status", "supplier_name"}:
+                    base = max(base, 145)
+                pdf_weights.append(base)
+            weight_total = sum(pdf_weights)
+            widths = [available_width * weight / weight_total for weight in pdf_weights]
             header_style = ParagraphStyle("ReportHeader", fontName="Helvetica-Bold", fontSize=7,
                                           leading=8.5, textColor=colors.white, alignment=TA_CENTER)
             body_center = ParagraphStyle("ReportBodyCenter", fontName="Helvetica", fontSize=7,
