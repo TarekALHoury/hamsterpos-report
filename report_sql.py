@@ -88,7 +88,8 @@ SELECT
         FROM payments purchase_payment
         JOIN receipts purchase_receipt ON purchase_receipt.id = purchase_payment.receipt
         WHERE purchase_payment.supplier = sd.supplier
-          AND (purchase_payment.ref = sd.id OR purchase_payment.ref = sd.supplierdoc)
+          AND (purchase_payment.ref = sd.id OR
+               (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND purchase_payment.ref = sd.supplierdoc))
           AND DATE(purchase_receipt.datenew) = DATE(sd.datenew)
         ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
         LIMIT 1
@@ -108,7 +109,10 @@ SELECT
         FROM payments pay
         JOIN receipts pay_receipt ON pay_receipt.id = pay.receipt
         WHERE pay.supplier = sd.supplier
-          AND (pay.ref = sd.supplierdoc OR pay.ref = sd.id)
+          AND (pay.ref = sd.id OR
+               (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND pay.ref = sd.supplierdoc) OR
+               (COALESCE(TRIM(sd.supplierdoc), '') = '' AND COALESCE(TRIM(pay.ref), '') = ''
+                AND pay_receipt.datenew = sd.datenew))
           AND DATE(pay_receipt.datenew) = DATE(sd.datenew)
         ORDER BY pay_receipt.datenew DESC, pay.id DESC
         LIMIT 1
@@ -262,7 +266,8 @@ FROM (
                FROM payments purchase_payment
                JOIN receipts purchase_receipt ON purchase_receipt.id = purchase_payment.receipt
                WHERE purchase_payment.supplier = sd.supplier
-                 AND (purchase_payment.ref = sd.id OR purchase_payment.ref = sd.supplierdoc)
+                 AND (purchase_payment.ref = sd.id OR
+                      (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND purchase_payment.ref = sd.supplierdoc))
                  AND DATE(purchase_receipt.datenew) = DATE(sd.datenew)
                ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
                LIMIT 1
@@ -281,7 +286,10 @@ FROM (
                FROM payments pay
                JOIN receipts pay_receipt ON pay_receipt.id = pay.receipt
                WHERE pay.supplier = sd.supplier
-                 AND (pay.ref = sd.supplierdoc OR pay.ref = sd.id)
+                 AND (pay.ref = sd.id OR
+                      (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND pay.ref = sd.supplierdoc) OR
+                      (COALESCE(TRIM(sd.supplierdoc), '') = '' AND COALESCE(TRIM(pay.ref), '') = ''
+                       AND pay_receipt.datenew = sd.datenew))
                  AND DATE(pay_receipt.datenew) = DATE(sd.datenew)
                ORDER BY pay_receipt.datenew DESC, pay.id DESC
                LIMIT 1
@@ -293,7 +301,8 @@ FROM (
           FROM payments purchase_payment
           JOIN receipts purchase_receipt ON purchase_receipt.id = purchase_payment.receipt
           WHERE purchase_payment.supplier = sd.supplier
-            AND (purchase_payment.ref = sd.id OR purchase_payment.ref = sd.supplierdoc)
+            AND (purchase_payment.ref = sd.id OR
+                 (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND purchase_payment.ref = sd.supplierdoc))
             AND DATE(purchase_receipt.datenew) = DATE(sd.datenew)
           ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
           LIMIT 1
@@ -303,7 +312,8 @@ FROM (
           FROM payments purchase_payment
           JOIN receipts purchase_receipt ON purchase_receipt.id = purchase_payment.receipt
           WHERE purchase_payment.supplier = sd.supplier
-            AND (purchase_payment.ref = sd.id OR purchase_payment.ref = sd.supplierdoc)
+            AND (purchase_payment.ref = sd.id OR
+                 (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND purchase_payment.ref = sd.supplierdoc))
             AND DATE(purchase_receipt.datenew) = DATE(sd.datenew)
           ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
           LIMIT 1
