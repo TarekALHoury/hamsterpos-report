@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.7"
+APP_VERSION = "3.8"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -406,7 +406,10 @@ class ReportApp(ctk.CTk):
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
+        self._theme_sync_job = None
         self._style_table(ctk.get_appearance_mode() == "Dark")
+        if self.config_data.get("appearance") == "System":
+            self._theme_sync_job = self.after(100, self.sync_system_table_theme)
         self.after(1000, self.update_live_end_time)
         if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
@@ -836,12 +839,30 @@ class ReportApp(ctk.CTk):
         self.load_categories()
 
     def change_theme(self, mode):
+        if self._theme_sync_job is not None:
+            try: self.after_cancel(self._theme_sync_job)
+            except Exception: pass
+            self._theme_sync_job = None
         ctk.set_appearance_mode(mode)
         self.config_data["appearance"] = mode
         try: save_config(self.config_data)
         except Exception: pass
-        dark = mode == "Dark" or (mode == "System" and ctk.get_appearance_mode() == "Dark")
-        self._style_table(dark)
+        if mode == "System":
+            # CustomTkinter resolves System asynchronously. Styling ttk now
+            # would retain the previous explicit theme, so synchronize after
+            # its Windows appearance callback has completed.
+            self._theme_sync_job = self.after(100, self.sync_system_table_theme)
+        else:
+            self._style_table(mode == "Dark")
+
+    def sync_system_table_theme(self):
+        self._theme_sync_job = None
+        if self.config_data.get("appearance") != "System":
+            return
+        self._style_table(ctk.get_appearance_mode() == "Dark")
+        # Keep the native ttk table synchronized if Windows changes theme while
+        # the application remains open.
+        self._theme_sync_job = self.after(1000, self.sync_system_table_theme)
 
     def _style_table(self, dark=True):
         style = ttk.Style(self)
