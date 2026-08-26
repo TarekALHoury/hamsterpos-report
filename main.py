@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -295,16 +295,31 @@ class SettingsDialog(ctk.CTkToplevel):
         form = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
         form.pack(fill="both", expand=True, padx=18)
         self.entries = {}
-        fields = (("host", "Host"), ("port", "Port"), ("database", "Database"), ("username", "Username"), ("password", "Password"), ("currency", "Currency symbol"), ("purchase_reason", "Purchase movement reason (advanced)"))
+        fields = (("host", "Host"), ("port", "Port"), ("username", "Username"), ("password", "Password"), ("database", "Database"), ("currency", "Currency symbol"), ("purchase_reason", "Purchase movement reason (advanced)"))
         for key, label in fields:
             ctk.CTkLabel(form, text=label).pack(anchor="w", padx=12, pady=(8, 3))
-            entry = ctk.CTkEntry(form, show="•" if key == "password" else "")
-            entry.insert(0, str(config.get(key, ""))); entry.pack(fill="x", padx=12)
+            if key == "database":
+                database_row = ctk.CTkFrame(form, fg_color="transparent")
+                database_row.pack(fill="x", padx=12)
+                current_database = str(config.get(key, ""))
+                entry = ctk.CTkComboBox(database_row, values=[current_database] if current_database else [""])
+                entry.set(current_database)
+                entry.pack(side="left", fill="x", expand=True)
+                self.load_databases_btn = ctk.CTkButton(
+                    database_row, text="Load databases", width=120,
+                    fg_color="#334155", command=self.load_databases,
+                )
+                self.load_databases_btn.pack(side="left", padx=(8, 0))
+            else:
+                entry = ctk.CTkEntry(form, show="•" if key == "password" else "")
+                entry.insert(0, str(config.get(key, ""))); entry.pack(fill="x", padx=12)
             self.entries[key] = entry
         self.status = ctk.CTkLabel(self, text="", text_color="#f0aa5b", height=24); self.status.pack(pady=(6, 0))
         buttons = ctk.CTkFrame(self, fg_color="transparent"); buttons.pack(fill="x", padx=30, pady=(4, 18))
         ctk.CTkButton(buttons, text="Test connection", fg_color="#334155", command=self.test).pack(side="left")
         ctk.CTkButton(buttons, text="Save settings", command=self.save).pack(side="right")
+        if config.get("host") and config.get("username"):
+            self.after(250, self.load_databases)
 
     def values(self):
         values = {key: entry.get().strip() for key, entry in self.entries.items()}
@@ -317,6 +332,52 @@ class SettingsDialog(ctk.CTkToplevel):
                 with conn.cursor() as cur: cur.execute("SELECT 1")
             self.status.configure(text="Connection successful", text_color="#3ecf8e")
         except Exception as exc: self.status.configure(text=f"Connection failed: {exc}", text_color="#ff6b6b")
+
+    def load_databases(self):
+        """Load databases accessible with the entered server credentials."""
+        try:
+            host = self.entries["host"].get().strip()
+            port = int(self.entries["port"].get().strip())
+            username = self.entries["username"].get().strip()
+            password = self.entries["password"].get()
+        except ValueError:
+            self.status.configure(text="Port must be a number", text_color="#ff6b6b")
+            return
+
+        self.load_databases_btn.configure(state="disabled", text="Loading...")
+        self.status.configure(text="Connecting to server...", text_color="#f0aa5b")
+
+        def worker():
+            try:
+                connection = pymysql.connect(
+                    host=host, port=port, user=username, password=password,
+                    charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+                    connect_timeout=8, read_timeout=30, autocommit=True,
+                )
+                with connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SHOW DATABASES")
+                        databases = [next(iter(row.values())) for row in cursor.fetchall()]
+                self.after(0, lambda: self.finish_loading_databases(databases, None))
+            except Exception as exc:
+                error = str(exc)
+                self.after(0, lambda: self.finish_loading_databases([], error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_loading_databases(self, databases, error):
+        if not self.winfo_exists():
+            return
+        self.load_databases_btn.configure(state="normal", text="Load databases")
+        if error:
+            self.status.configure(text=f"Could not load databases: {error}", text_color="#ff6b6b")
+            return
+        current = self.entries["database"].get().strip()
+        choices = databases or ([current] if current else [""])
+        self.entries["database"].configure(values=choices)
+        if current not in choices and choices:
+            self.entries["database"].set(choices[0])
+        self.status.configure(text=f"{len(databases)} databases available", text_color="#3ecf8e")
 
     def save(self):
         try:
