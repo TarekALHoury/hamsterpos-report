@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "2.10"
+APP_VERSION = "2.11"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -771,7 +771,9 @@ class ReportApp(ctk.CTk):
         qty_out = sum(self.number(r, "qty_out") for r in rows)
         sold = sum(self.number(r, "total_sold") for r in rows)
         bought = sum(self.number(r, "total_bought") for r in rows)
-        tickets = len({str(r.get("ticket_no")) for r in rows if r.get("ticket_no") not in (None, "")})
+        tickets = len({str(r.get("ticket_no")) for r in rows
+                       if r.get("ticket_no") not in (None, "")
+                       and r.get("movement_type") in (None, "Sold")})
         return [("Total Tickets", tickets), ("In", qty_in), ("Out", qty_out),
                 ("Total Sold", sold), ("Total Bought", bought)]
 
@@ -984,6 +986,10 @@ class ReportApp(ctk.CTk):
 
     def mark_sale_price_status(self, rows):
         for row in rows:
+            if row.get("movement_type") == "Refund":
+                row["price_status"] = "REFUND (-)"
+                row["__sale_status"] = "discount"
+                continue
             if row.get("movement_type") not in (None, "Sold"):
                 row["price_status"] = "—"
                 row.pop("__sale_status", None)

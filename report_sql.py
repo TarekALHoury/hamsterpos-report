@@ -210,6 +210,53 @@ FROM (
 
     UNION ALL
 
+    SELECT sd.datenew AS movement_at,
+           (SELECT refund_ticket.ticketid
+            FROM ticketlines refund_line
+            JOIN receipts refund_receipt ON refund_receipt.id = refund_line.ticket
+            JOIN tickets refund_ticket ON refund_ticket.id = refund_receipt.id
+            WHERE refund_line.product = sd.product
+              AND refund_receipt.datenew < sd.datenew
+            ORDER BY refund_receipt.datenew DESC, refund_line.id DESC
+            LIMIT 1) AS ticket_no,
+           p.code, p.name,
+           COALESCE((SELECT GROUP_CONCAT(DISTINCT
+               CASE LOWER(refund_pay.payment)
+                   WHEN 'cash' THEN 'Cash' WHEN 'cashrefund' THEN 'Cash'
+                   WHEN 'cheque' THEN 'Cheque' WHEN 'voucher' THEN 'Voucher'
+                   WHEN 'magcard' THEN 'Card' WHEN 'card' THEN 'Card'
+                   WHEN 'free' THEN 'Free' WHEN 'debt' THEN 'Debt'
+                   WHEN 'prepaid' THEN 'VIP Points' WHEN 'bank' THEN 'Bank'
+                   WHEN 'slip' THEN 'Slip' WHEN 'mobile' THEN 'Mobile'
+                   WHEN 'credit' THEN 'Credit' ELSE refund_pay.payment
+               END ORDER BY refund_pay.payment SEPARATOR ', ')
+               FROM payments refund_pay
+               WHERE refund_pay.receipt = (
+                   SELECT refund_receipt.id
+                   FROM ticketlines refund_line
+                   JOIN receipts refund_receipt ON refund_receipt.id = refund_line.ticket
+                   JOIN tickets refund_ticket ON refund_ticket.id = refund_receipt.id
+                   WHERE refund_line.product = sd.product
+                     AND refund_receipt.datenew < sd.datenew
+                   ORDER BY refund_receipt.datenew DESC, refund_line.id DESC
+                   LIMIT 1
+               )), '') AS payment_method,
+           sd.price AS sell_price, p.pricesell AS regular_sell_price,
+           0 AS explicit_discount_amount, 0 AS price_level,
+           sd.units AS qty_in, 0 AS qty_out,
+           -(sd.units * sd.price) AS total_sold, 0 AS total_bought,
+           c.name AS category, 'Refund' AS movement_type
+    FROM closedcash cc
+    JOIN stockdiary sd ON sd.datenew >= cc.datestart
+                       AND sd.datenew <= COALESCE(cc.dateend, NOW())
+    JOIN products p ON p.id = sd.product
+    LEFT JOIN categories c ON c.id = p.category
+    WHERE cc.money = %(money)s
+      AND sd.reason = 2 AND sd.units > 0
+      AND %(movement_filter)s IN ('All', 'Sold')
+
+    UNION ALL
+
     SELECT CASE WHEN TIME(sd.datenew) = '00:00:00' THEN COALESCE((
                SELECT purchase_receipt.datenew
                FROM payments purchase_payment
@@ -263,7 +310,7 @@ FROM (
       ), sd.datenew) ELSE sd.datenew END) <= COALESCE(cc.dateend, NOW())
     JOIN products p ON p.id = sd.product
     LEFT JOIN categories c ON c.id = p.category
-    WHERE cc.money = %(money)s AND sd.units > 0
+    WHERE cc.money = %(money)s AND sd.units > 0 AND sd.reason <> 2
       AND (%(purchase_reason)s IS NULL OR sd.reason = %(purchase_reason)s)
       AND %(movement_filter)s IN ('All', 'Purchased')
 ) movements
