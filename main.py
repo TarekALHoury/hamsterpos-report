@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -505,6 +505,7 @@ class ReportApp(ctk.CTk):
             justify="center",
         )
         self._column_resize_job = None
+        self._column_base_widths = None
         self._last_table_width = 0
         self._last_resize_event = 0.0
         self.tree.bind("<Configure>", self.schedule_column_resize, add="+")
@@ -521,6 +522,7 @@ class ReportApp(ctk.CTk):
 
     def configure_columns(self, schedule_resize=True):
         self.render_generation += 1
+        self._column_base_widths = None
         self.hide_empty_state()
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
         for key, title, width in self.columns:
@@ -533,18 +535,14 @@ class ReportApp(ctk.CTk):
 
     def schedule_column_resize(self, event=None):
         width = event.width if event is not None else self.tree.winfo_width()
-        if abs(width - self._last_table_width) < 8:
+        if abs(width - self._last_table_width) < 2:
             return
-        self._last_resize_event = time.monotonic()
-        if self._column_resize_job is None:
-            self._column_resize_job = self.after(220, self.finish_resize_when_settled)
-
-    def finish_resize_when_settled(self):
-        quiet_for = time.monotonic() - self._last_resize_event
-        if quiet_for < 0.18:
-            self._column_resize_job = self.after(int((0.18 - quiet_for) * 1000) + 20, self.finish_resize_when_settled)
-            return
-        self.resize_columns()
+        # Update at most once per display frame. The old settle timer left a
+        # visible empty strip until the user stopped dragging the window.
+        if self._column_resize_job is not None:
+            try: self.after_cancel(self._column_resize_job)
+            except Exception: pass
+        self._column_resize_job = self.after(16, self.resize_columns)
 
     def resize_columns(self):
         if self._column_resize_job is not None:
@@ -552,21 +550,22 @@ class ReportApp(ctk.CTk):
             except Exception: pass
         self._column_resize_job = None
         self._last_table_width = max(1, self.tree.winfo_width() - 4)
-        body_font = tkfont.Font(family="Segoe UI", size=10)
-        heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        desired_widths = {}
-        for key, title, configured_width in self.columns:
-            minimum = self.column_minimum(key)
-            # Measure both the heading and visible data. This prevents adjacent
-            # headings/values from appearing joined at any window size.
-            heading_width = heading_font.measure(title) + 34
-            content_width = max(
-                (body_font.measure(str(self.row_display(row, key))) + 34 for row in self.rows),
-                default=0,
-            )
-            cap = 420 if key == "item_name" else (260 if key in {"payment_method", "price_status", "supplier_name"} else 180)
-            desired_widths[key] = max(minimum, configured_width, heading_width,
-                                      min(content_width, cap))
+        if self._column_base_widths is None:
+            body_font = tkfont.Font(family="Segoe UI", size=10)
+            heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+            desired_widths = {}
+            for key, title, configured_width in self.columns:
+                minimum = self.column_minimum(key)
+                heading_width = heading_font.measure(title) + 34
+                content_width = max(
+                    (body_font.measure(str(self.row_display(row, key))) + 34 for row in self.rows),
+                    default=0,
+                )
+                cap = 420 if key == "item_name" else (260 if key in {"payment_method", "price_status", "supplier_name"} else 180)
+                desired_widths[key] = max(minimum, configured_width, heading_width,
+                                          min(content_width, cap))
+            self._column_base_widths = desired_widths
+        desired_widths = self._column_base_widths
 
         # Fill spare room evenly, while retaining a wider virtual table and its
         # horizontal scrollbar when the window is narrower than the safe widths.
@@ -576,6 +575,10 @@ class ReportApp(ctk.CTk):
             final_width = width + extra_each + (1 if index < remainder else 0)
             self.tree.column(key, width=final_width, minwidth=self.column_minimum(key),
                              stretch=False)
+        if self._last_table_width >= sum(desired_widths.values()):
+            # If the table used to require horizontal scrolling, discard that
+            # stale offset once every column fits in the enlarged window.
+            self.tree.xview_moveto(0)
 
     @staticmethod
     def column_minimum(key):
@@ -1181,6 +1184,7 @@ class ReportApp(ctk.CTk):
             self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
             return
         self.rows = rows
+        self._column_base_widths = None
         if rows:
             self.hide_empty_state()
         else:
