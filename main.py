@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "2.11"
+APP_VERSION = "2.12"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -475,26 +475,30 @@ class ReportApp(ctk.CTk):
             try: self.after_cancel(self._column_resize_job)
             except Exception: pass
         self._column_resize_job = None
-        available = max(1, self.tree.winfo_width() - 4)
-        self._last_table_width = available
-        minimums = {key: self.column_minimum(key) for key, _, _ in self.columns}
-        minimum_total = sum(minimums.values())
-        extra = max(0, available - minimum_total)
-        desired_extra = {key: max(0, configured - minimums[key])
-                         for key, _, configured in self.columns}
-        desired_total = sum(desired_extra.values())
+        self._last_table_width = max(1, self.tree.winfo_width() - 4)
+        longest_item_name = max(
+            (len(str(row.get("item_name") or "")) for row in self.rows),
+            default=0,
+        )
         for key, _, _ in self.columns:
-            share = int(extra * desired_extra[key] / desired_total) if desired_total else 0
-            width = minimums[key] + share
-            self.tree.column(key, width=width, minwidth=minimums[key], stretch=False)
+            minimum = self.column_minimum(key)
+            # Keep every column compact. Only product names receive additional
+            # width, and only when the current result actually contains a long name.
+            width = (max(minimum, min(360, longest_item_name * 7 + 28))
+                     if key == "item_name" else minimum)
+            self.tree.column(key, width=width, minwidth=minimum, stretch=False)
 
     @staticmethod
     def column_minimum(key):
         return {
             "sold_at": 120, "purchased_at": 120, "movement_at": 120,
-            "ticket_no": 85, "barcode": 105, "item_name": 150,
-            "payment_method": 155, "price_status": 205,
-            "supplier_name": 135,
+            "ticket_no": 80, "barcode": 100, "item_name": 145,
+            "payment_method": 135, "price_status": 190,
+            "supplier_name": 130,
+            "qty_sold": 90, "qty_purchased": 110,
+            "total_buy_price": 115, "total_sold": 110,
+            "total_bought": 115, "sales": 90,
+            "qty_in": 65, "qty_out": 65,
         }.get(key, 90)
 
     def grouped_report_rows(self):
@@ -1074,6 +1078,7 @@ class ReportApp(ctk.CTk):
             self.hide_empty_state()
         else:
             self.show_empty_state()
+        self.resize_columns()
         self.render_generation += 1
         generation = self.render_generation
         self.tree.delete(*self.tree.get_children())
