@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.6"
+APP_VERSION = "3.7"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -490,8 +490,9 @@ class ReportApp(ctk.CTk):
         self.tree = ttk.Treeview(table_frame, style="Report.Treeview", show="headings")
         self.tree.tag_configure("category_header", background="#1f6aa5", foreground="#ffffff", font=("Segoe UI", 12, "bold"))
         self.tree.tag_configure("category_total", background="#dbeafe", foreground="#12395b", font=("Segoe UI", 10, "bold"))
-        self.tree.tag_configure("price_up", background="#12372a", foreground="#bbf7d0")
-        self.tree.tag_configure("price_down", background="#421b24", foreground="#fecdd3")
+        # Purchase-cost increases are warnings (red); decreases are favorable (green).
+        self.tree.tag_configure("price_up", background="#421b24", foreground="#fecdd3")
+        self.tree.tag_configure("price_down", background="#12372a", foreground="#bbf7d0")
         self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
         self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
         vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview); hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
@@ -849,10 +850,10 @@ class ReportApp(ctk.CTk):
                         foreground="#e5edf8" if dark else "#172033")
         style.configure("Report.Treeview.Heading", background="#1f2937" if dark else "#e5edf2",
                         foreground="#a9b8cc" if dark else "#24344d")
-        self.tree.tag_configure("price_up", background="#12372a" if dark else "#dcfce7",
-                                foreground="#bbf7d0" if dark else "#166534")
-        self.tree.tag_configure("price_down", background="#421b24" if dark else "#ffe4e6",
+        self.tree.tag_configure("price_up", background="#421b24" if dark else "#ffe4e6",
                                 foreground="#fecdd3" if dark else "#9f1239")
+        self.tree.tag_configure("price_down", background="#12372a" if dark else "#dcfce7",
+                                foreground="#bbf7d0" if dark else "#166534")
         self.tree.tag_configure("sale_discount", background="#421b24" if dark else "#ffe4e6",
                                 foreground="#fecdd3" if dark else "#9f1239")
         self.tree.tag_configure("sale_price_change", background="#12372a" if dark else "#dcfce7",
@@ -1343,12 +1344,16 @@ class ReportApp(ctk.CTk):
                     sale_status = sale_statuses.get(row_index)
                     lowered = direction is not None and direction < 0 or sale_status == "discount"
                     raised = direction is not None and direction > 0 or sale_status == "changed"
+                    if self.report_type.get() == "purchases" and direction is not None:
+                        red_status, green_status = raised, lowered
+                    else:
+                        red_status, green_status = lowered, raised
                     row_styles = []
                     for key, _, _ in self.columns:
                         is_left = key in left_columns
-                        if lowered:
+                        if red_status:
                             row_styles.append(changed_down_left if is_left else changed_down_center)
-                        elif raised:
+                        elif green_status:
                             row_styles.append(changed_up_left if is_left else changed_up_center)
                         else:
                             row_styles.append(body_left if is_left else body_center)
@@ -1373,8 +1378,9 @@ class ReportApp(ctk.CTk):
                                            ("TOPPADDING", (0,row_index), (-1,row_index), 6),
                                            ("BOTTOMPADDING", (0,row_index), (-1,row_index), 6)]))
             for row_index, direction in changed_price_rows:
-                background = colors.HexColor("#dcfce7" if direction > 0 else "#ffe4e6")
-                foreground = colors.HexColor("#166534" if direction > 0 else "#9f1239")
+                increase = direction > 0
+                background = colors.HexColor("#ffe4e6" if increase else "#dcfce7")
+                foreground = colors.HexColor("#9f1239" if increase else "#166534")
                 table.setStyle(TableStyle([("BACKGROUND", (0,row_index), (-1,row_index), background),
                                            ("TEXTCOLOR", (0,row_index), (-1,row_index), foreground),
                                            ("FONTNAME", (0,row_index), (-1,row_index), "Helvetica-Bold")]))
