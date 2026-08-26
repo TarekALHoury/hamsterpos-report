@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "3.8"
+APP_VERSION = "3.9"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -586,12 +586,14 @@ class ReportApp(ctk.CTk):
             self._column_base_widths = desired_widths
         desired_widths = self._column_base_widths
 
-        # Fill spare room evenly, while retaining a wider virtual table and its
-        # horizontal scrollbar when the window is narrower than the safe widths.
+        # Keep informational/numeric columns compact. Item Name is the single
+        # flexible column: it absorbs spare window width and already expands to
+        # the full measured product name when necessary. This avoids large,
+        # uneven-looking gaps between every heading.
         spare = max(0, self._last_table_width - sum(desired_widths.values()))
-        extra_each, remainder = divmod(spare, max(1, len(desired_widths)))
-        for index, (key, width) in enumerate(desired_widths.items()):
-            final_width = width + extra_each + (1 if index < remainder else 0)
+        flexible_key = "item_name" if "item_name" in desired_widths else next(iter(desired_widths), None)
+        for key, width in desired_widths.items():
+            final_width = width + (spare if key == flexible_key else 0)
             self.tree.column(key, width=final_width, minwidth=self.column_minimum(key),
                              stretch=False)
         if self._last_table_width >= sum(desired_widths.values()):
