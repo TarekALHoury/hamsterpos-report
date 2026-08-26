@@ -6,7 +6,7 @@ older MySQL versions commonly bundled with POS installations.
 
 SALES_SQL = """
 SELECT
-    sold_at, barcode, item_name, payment_method, buy_price, sell_price,
+    sold_at, barcode, item_name, payment_method, sell_price, actual_sell_price,
     regular_sell_price, explicit_discount_amount, price_level,
     SUM(qty_sold) AS qty_sold,
     SUM(sales) AS sales,
@@ -27,17 +27,8 @@ SELECT
             END ORDER BY pay.payment SEPARATOR ', ')
         FROM payments pay WHERE pay.receipt = r.id
     ), '') AS payment_method,
-    COALESCE((
-        SELECT sd.price
-        FROM stockdiary sd
-        WHERE sd.product = tl.product
-          AND sd.datenew <= r.datenew
-          AND sd.units > 0
-          AND (%(purchase_reason)s IS NULL OR sd.reason = %(purchase_reason)s)
-        ORDER BY sd.datenew DESC, sd.id DESC
-        LIMIT 1
-    ), 0) AS buy_price,
-    tl.price AS sell_price,
+    p.pricesell AS sell_price,
+    tl.price AS actual_sell_price,
     p.pricesell AS regular_sell_price,
     COALESCE((
         SELECT ABS(discount_tl.units * discount_tl.price)
@@ -70,7 +61,7 @@ WHERE r.datenew >= %(start_at)s
   )
 ) sale_rows
 WHERE (%(payment_method)s = 'All' OR FIND_IN_SET(%(payment_method)s, REPLACE(payment_method, ', ', ',')) > 0)
-GROUP BY sold_at, barcode, item_name, payment_method, buy_price, sell_price,
+GROUP BY sold_at, barcode, item_name, payment_method, sell_price, actual_sell_price,
          regular_sell_price, explicit_discount_amount, price_level, category
 ORDER BY {order_clause}
 """
@@ -158,7 +149,6 @@ SALES_COLUMNS = (
     ("barcode", "Item Barcode", 130),
     ("item_name", "Item Name", 230),
     ("payment_method", "Payment Method", 135),
-    ("buy_price", "Buy Price", 95),
     ("sell_price", "Sell Price", 95),
     ("price_status", "Price Status", 190),
     ("qty_sold", "QTY Sold", 90),
