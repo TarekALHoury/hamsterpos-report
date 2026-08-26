@@ -27,7 +27,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "2.9"
+APP_VERSION = "2.10"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -992,20 +992,23 @@ class ReportApp(ctk.CTk):
             qty = abs(self.number(row, "qty_sold") or self.number(row, "qty_out"))
             discount = abs(self.number(row, "explicit_discount_amount"))
             regular = self.number(row, "regular_sell_price")
-            if discount > 0:
-                original_total = price * qty + discount
+            if regular > 0 and abs(price - regular) > 0.000001:
+                unit_difference = abs(price - regular)
+                total_difference = unit_difference * qty
+                percent = unit_difference / regular * 100
+                if price < regular:
+                    row["price_status"] = (f"Price -{self.format_money(unit_difference)} each / "
+                                           f"{self.format_money(total_difference)} total ({percent:.1f}%)")
+                    row["__sale_status"] = "discount"
+                else:
+                    row["price_status"] = (f"Price +{self.format_money(unit_difference)} each / "
+                                           f"{self.format_money(total_difference)} total ({percent:.1f}%)")
+                    row["__sale_status"] = "changed"
+            elif discount > 0:
+                original_total = price * qty
                 percent = (discount / original_total * 100) if original_total else 0
                 row["price_status"] = f"Discount {self.format_money(discount)} ({percent:.1f}%)"
                 row["__sale_status"] = "discount"
-            elif regular > 0 and abs(price - regular) > 0.000001:
-                difference = abs(price - regular)
-                percent = difference / regular * 100
-                if price < regular:
-                    row["price_status"] = f"Discount {self.format_money(difference)} ({percent:.1f}%)"
-                    row["__sale_status"] = "discount"
-                else:
-                    row["price_status"] = f"Price +{self.format_money(difference)} ({percent:.1f}%)"
-                    row["__sale_status"] = "changed"
             else:
                 row["price_status"] = "Regular"
                 row.pop("__sale_status", None)
