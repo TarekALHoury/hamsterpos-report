@@ -95,7 +95,15 @@ SELECT
         LIMIT 1
     ), po.datenew, sd.datenew) ELSE sd.datenew END AS purchased_at,
     p.code AS barcode, p.name AS item_name,
-    CASE WHEN sd.supplier IS NULL THEN '' ELSE COALESCE((
+    CASE WHEN sd.reason NOT IN (1, -2) THEN
+        CASE sd.reason
+            WHEN 4 THEN 'Adjust - Add' WHEN -4 THEN 'Adjust - Minus'
+            WHEN -8 THEN 'Subtract' WHEN -3 THEN 'Breakage'
+            WHEN -6 THEN 'Free' WHEN -5 THEN 'Sample - Out'
+            WHEN -7 THEN 'Used' WHEN 1000 THEN 'Transfer'
+            ELSE CONCAT('Reason ', sd.reason)
+        END
+    WHEN sd.supplier IS NULL THEN '' ELSE COALESCE((
         SELECT CASE LOWER(pay.payment)
                 WHEN 'cash' THEN 'Cash'
                 WHEN 'cheque' THEN 'Cheque'
@@ -272,7 +280,15 @@ FROM (
                ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
                LIMIT 1
            ), sd.datenew) ELSE sd.datenew END, NULL, p.code, p.name,
-           CASE WHEN sd.supplier IS NULL THEN '' ELSE COALESCE((
+           CASE WHEN sd.reason NOT IN (1, -2) THEN
+               CASE sd.reason
+                   WHEN 4 THEN 'Adjust - Add' WHEN -4 THEN 'Adjust - Minus'
+                   WHEN -8 THEN 'Subtract' WHEN -3 THEN 'Breakage'
+                   WHEN -6 THEN 'Free' WHEN -5 THEN 'Sample - Out'
+                   WHEN -7 THEN 'Used' WHEN 1000 THEN 'Transfer'
+                   ELSE CONCAT('Reason ', sd.reason)
+               END
+           WHEN sd.supplier IS NULL THEN '' ELSE COALESCE((
                SELECT CASE LOWER(pay.payment)
                        WHEN 'cash' THEN 'Cash'
                        WHEN 'cheque' THEN 'Cheque'
