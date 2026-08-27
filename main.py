@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.9"
+APP_VERSION = "4.10"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -552,17 +552,16 @@ class ReportApp(ctk.CTk):
         self._column_base_widths = None
         self.hide_empty_state()
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
-        heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         numeric_columns = {"buy_price", "sell_price", "qty_sold", "qty_purchased",
                            "total_buy_price", "sales", "qty_in", "qty_out",
                            "total_sold", "total_bought"}
         for key, title, width in self.columns:
             align = "e" if key in numeric_columns else "w"
             self.tree.heading(key, text=title, anchor=align)
-            minimum = self.column_minimum(key)
-            fixed_width = max(width, minimum, heading_font.measure(title) + 24)
-            self.tree.column(key, width=fixed_width, minwidth=minimum, anchor=align, stretch=False)
-        self._last_item_name_width = self.tree.column("item_name", "width") if "item_name" in self.tree["columns"] else 0
+            self.tree.column(key, width=112, minwidth=80, anchor=align, stretch=False)
+        self._last_column_widths = {
+            key: int(self.tree.column(key, "width")) for key in self.tree["columns"]
+        }
         self.tree.xview_moveto(0)
         self.after_idle(self.update_table_viewport)
 
@@ -587,12 +586,10 @@ class ReportApp(ctk.CTk):
         self.prepare_tree_display_values()
 
     def column_resize_finished(self, _event=None):
-        if "item_name" not in self.tree["columns"]:
+        widths = {key: int(self.tree.column(key, "width")) for key in self.tree["columns"]}
+        if widths == getattr(self, "_last_column_widths", widths):
             return
-        width = self.tree.column("item_name", "width")
-        if width == getattr(self, "_last_item_name_width", width):
-            return
-        self._last_item_name_width = width
+        self._last_column_widths = widths
         self.update_table_viewport()
         self.prepare_tree_display_values()
         self.render_current_rows()
@@ -1181,16 +1178,19 @@ class ReportApp(ctk.CTk):
         if not hasattr(self, "tree") or "item_name" not in self.tree["columns"]:
             return
         keys = [key for key, _, _ in self.columns]
-        name_index = keys.index("item_name")
-        available = max(40, int(self.tree.column("item_name", "width")) - 24)
+        wrap_keys = {"item_name", "payment_method", "supplier_name", "price_status"}
         font = tkfont.Font(family="Segoe UI", size=10)
         maximum_lines = 1
         for row in self.rows:
             values = list(row.get("__display_values") or
                           tuple(self.row_display(row, key) for key in keys))
-            wrapped = self.wrap_tree_text(str(values[name_index] or ""), available, font)
-            values[name_index] = wrapped
-            maximum_lines = max(maximum_lines, wrapped.count("\n") + 1)
+            for index, key in enumerate(keys):
+                if key not in wrap_keys:
+                    continue
+                available = max(40, int(self.tree.column(key, "width")) - 20)
+                wrapped = self.wrap_tree_text(str(values[index] or ""), available, font)
+                values[index] = wrapped
+                maximum_lines = max(maximum_lines, wrapped.count("\n") + 1)
             row["__tree_display_values"] = tuple(values)
         self._wrapped_categories = {}
         self._wrapped_category_totals = {}
