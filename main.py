@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.10"
+APP_VERSION = "5.0"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -555,10 +555,16 @@ class ReportApp(ctk.CTk):
         numeric_columns = {"buy_price", "sell_price", "qty_sold", "qty_purchased",
                            "total_buy_price", "sales", "qty_in", "qty_out",
                            "total_sold", "total_bought"}
+        heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         for key, title, width in self.columns:
             align = "e" if key in numeric_columns else "w"
-            self.tree.heading(key, text=title, anchor=align)
-            self.tree.column(key, width=112, minwidth=80, anchor=align, stretch=False)
+            self.tree.heading(key, text=title, anchor="w")
+            # Every heading receives exactly the same trailing breathing room.
+            # This prevents long labels from touching the next column while
+            # avoiding the oversized gaps produced by content-based sizing.
+            fixed_width = max(52, heading_font.measure(title) + 28)
+            self.tree.column(key, width=fixed_width, minwidth=52,
+                             anchor=align, stretch=False)
         self._last_column_widths = {
             key: int(self.tree.column(key, "width")) for key in self.tree["columns"]
         }
