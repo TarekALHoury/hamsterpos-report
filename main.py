@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.3"
+APP_VERSION = "5.4"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -1203,7 +1203,9 @@ class ReportApp(ctk.CTk):
         if not hasattr(self, "tree") or "item_name" not in self.tree["columns"]:
             return
         keys = [key for key, _, _ in self.columns]
-        wrap_keys = {"item_name", "payment_method", "supplier_name", "price_status"}
+        # Only a product name is allowed to expand a logical report row.
+        # Every other column keeps the normal compact row height.
+        wrap_keys = {"item_name"}
         font = tkfont.Font(family="Segoe UI", size=10)
         for row in self.rows:
             values = list(row.get("__display_values") or
