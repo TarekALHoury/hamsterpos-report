@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.1"
+APP_VERSION = "5.2"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -498,6 +498,10 @@ class ReportApp(ctk.CTk):
         table_frame = ctk.CTkFrame(self.table_holder, width=900, height=600,
                                    fg_color=("#ffffff", "#111827"), corner_radius=14)
         self.table_frame = table_frame
+        # Keep the outer frame as the viewport. Without this, the Treeview's
+        # requested column width makes the frame grow beyond the window and
+        # clips the horizontal scrollbar along with the hidden columns.
+        table_frame.grid_propagate(False)
         table_frame.place(x=0, y=0, relheight=1)
         self.table_holder.bind("<Configure>", self.update_table_viewport, add="+")
         style = ttk.Style(self); style.theme_use("clam")
@@ -512,7 +516,12 @@ class ReportApp(ctk.CTk):
         self.tree.tag_configure("price_down", background="#12372a", foreground="#bbf7d0")
         self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
         self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
-        vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview); hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
+        vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview)
+        # The themed Tk scrollbar keeps a real draggable thumb even when the
+        # window is narrower than the fixed-width report. CTkScrollbar could
+        # visually collapse into its track and become practically unusable.
+        hs = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.horizontal_scrollbar = hs
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=(8, 0)); vs.grid(row=0, column=1, sticky="ns", pady=(8, 0)); hs.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
         self.empty_state = ctk.CTkLabel(
@@ -527,12 +536,20 @@ class ReportApp(ctk.CTk):
         self._last_table_width = 0
         self._last_resize_event = 0.0
         self.tree.bind("<ButtonRelease-1>", self.column_resize_finished, add="+")
+        self.tree.bind("<Shift-MouseWheel>", self.scroll_table_horizontally, add="+")
+        hs.bind("<MouseWheel>", self.scroll_table_horizontally, add="+")
         table_frame.grid_rowconfigure(0, weight=1); table_frame.grid_columnconfigure(0, weight=1)
         footer = ctk.CTkFrame(main, fg_color="transparent"); footer.pack(fill="x", padx=32, pady=(0, 12))
         self.status = ctk.CTkLabel(footer, text="Ready", text_color=("#52647c", "#8292aa")); self.status.pack(anchor="w")
         self.totals_frame = ctk.CTkFrame(footer, fg_color="transparent"); self.totals_frame.pack(fill="x", pady=(4, 0))
         self.total_cards = []
         self.configure_columns()
+
+    def scroll_table_horizontally(self, event):
+        """Scroll hidden fixed columns without requiring a scrollbar drag."""
+        direction = -1 if event.delta > 0 else 1
+        self.tree.xview_scroll(direction * 40, "units")
+        return "break"
 
     def update_table_viewport(self, event=None):
         if not hasattr(self, "table_frame") or not hasattr(self, "tree"):
