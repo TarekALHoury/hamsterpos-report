@@ -146,23 +146,23 @@ ORDER BY {order_clause}
 """
 
 SALES_COLUMNS = (
-    ("sold_at", "Date & Time", 145),
-    ("barcode", "Item Barcode", 130),
-    ("item_name", "Item Name", 230),
-    ("payment_method", "Payment Method", 135),
-    ("sell_price", "Sell Price", 95),
-    ("price_status", "Price Status", 190),
+    ("sold_at", "Date & Time", 125),
+    ("barcode", "Item Barcode", 105),
+    ("item_name", "Item Name", 225),
+    ("payment_method", "Payment Method", 125),
+    ("sell_price", "Sell Price", 90),
+    ("price_status", "Price Status", 175),
     ("qty_sold", "QTY Sold", 90),
     ("sales", "Sales", 105),
 )
 
 PURCHASE_COLUMNS = (
-    ("purchased_at", "Date & Time", 145),
-    ("barcode", "Item Barcode", 125),
+    ("purchased_at", "Date & Time", 125),
+    ("barcode", "Item Barcode", 105),
     ("item_name", "Item Name", 210),
-    ("payment_method", "Payment Method", 135),
-    ("buy_price", "Item Buy Price", 110),
-    ("supplier_name", "Supplier Name", 160),
+    ("payment_method", "Payment Method", 125),
+    ("buy_price", "Item Buy Price", 105),
+    ("supplier_name", "Supplier Name", 140),
     ("qty_purchased", "QTY Purchased", 105),
     ("total_buy_price", "Total Buy Price", 115),
 )
@@ -345,14 +345,14 @@ ORDER BY {order_clause}
 """
 
 CLOSE_CASH_COLUMNS = (
-    ("movement_at", "Date & Time", 145),
-    ("ticket_no", "Ticket No.", 95),
-    ("barcode", "Item Barcode", 125),
-    ("item_name", "Item Name", 230),
-    ("payment_method", "Payment Method", 135),
-    ("price_status", "Price Status", 190),
-    ("qty_in", "In", 85),
-    ("qty_out", "Out", 85),
-    ("total_sold", "Total Sold", 115),
-    ("total_bought", "Total Bought", 115),
+    ("movement_at", "Date & Time", 125),
+    ("ticket_no", "Ticket No.", 80),
+    ("barcode", "Item Barcode", 105),
+    ("item_name", "Item Name", 220),
+    ("payment_method", "Payment Method", 120),
+    ("price_status", "Price Status", 175),
+    ("qty_in", "In", 65),
+    ("qty_out", "Out", 65),
+    ("total_sold", "Total Sold", 100),
+    ("total_bought", "Total Bought", 105),
 )

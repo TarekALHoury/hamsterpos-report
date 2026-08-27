@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.6"
+APP_VERSION = "4.7"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -520,7 +520,7 @@ class ReportApp(ctk.CTk):
         self._column_base_widths = None
         self._last_table_width = 0
         self._last_resize_event = 0.0
-        self.tree.bind("<Configure>", self.schedule_column_resize, add="+")
+        self.tree.bind("<ButtonRelease-1>", self.column_resize_finished, add="+")
         table_frame.grid_rowconfigure(0, weight=1); table_frame.grid_columnconfigure(0, weight=1)
         footer = ctk.CTkFrame(main, fg_color="transparent"); footer.pack(fill="x", padx=32, pady=(0, 12))
         self.status = ctk.CTkLabel(footer, text="Ready", text_color=("#52647c", "#8292aa")); self.status.pack(anchor="w")
@@ -537,13 +537,15 @@ class ReportApp(ctk.CTk):
         self._column_base_widths = None
         self.hide_empty_state()
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
+        heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         for key, title, width in self.columns:
             align = "w" if key in ("item_name", "supplier_name", "price_status") else "center"
             self.tree.heading(key, text=title, anchor=align)
             minimum = self.column_minimum(key)
-            self.tree.column(key, width=max(width, minimum), minwidth=minimum, anchor=align, stretch=False)
-        if schedule_resize:
-            self.after_idle(self.resize_columns)
+            fixed_width = max(width, minimum, heading_font.measure(title) + 24)
+            self.tree.column(key, width=fixed_width, minwidth=minimum, anchor=align, stretch=False)
+        self._last_item_name_width = self.tree.column("item_name", "width") if "item_name" in self.tree["columns"] else 0
+        self.tree.xview_moveto(0)
 
     def schedule_column_resize(self, event=None):
         width = event.width if event is not None else self.tree.winfo_width()
@@ -561,58 +563,19 @@ class ReportApp(ctk.CTk):
             try: self.after_cancel(self._column_resize_job)
             except Exception: pass
         self._column_resize_job = None
-        self._last_table_width = max(1, self.tree.winfo_width() - 4)
-        if self._column_base_widths is None:
-            body_font = tkfont.Font(family="Segoe UI", size=10)
-            heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-            category_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
-            desired_widths = {}
-            first_key = self.columns[0][0]
-            category_width = 0
-            if self.group_categories.get():
-                category_labels = {
-                    str(row.get("category") or "Uncategorized").upper()
-                    for row in self.rows
-                }
-                category_labels.update(f"{name} TOTAL" for name in tuple(category_labels))
-                category_width = max(
-                    (category_font.measure(label) + 38 for label in category_labels),
-                    default=0,
-                )
-            for key, title, configured_width in self.columns:
-                minimum = self.column_minimum(key)
-                heading_width = heading_font.measure(title) + 34
-                content_width = max(
-                    (body_font.measure(str(self.row_display(row, key))) + 34 for row in self.rows),
-                    default=0,
-                )
-                desired_widths[key] = max(minimum, configured_width if self.rows else 0,
-                                          heading_width, content_width)
-                if key == first_key:
-                    # Group headings and their total labels live in the first
-                    # cell. Give that cell their full measured width instead of
-                    # clipping the text into the next column.
-                    desired_widths[key] = max(desired_widths[key], category_width)
-            self._column_base_widths = desired_widths
-        desired_widths = self._column_base_widths
+        # Column positions are intentionally fixed. Window resizing changes the
+        # viewport only; users may still drag a header separator themselves.
+        self.prepare_tree_display_values()
 
-        # Keep informational/numeric columns compact. Item Name is the single
-        # flexible column: it absorbs spare window width and already expands to
-        # the full measured product name when necessary. This avoids large,
-        # uneven-looking gaps between every heading.
-        spare = max(0, self._last_table_width - sum(desired_widths.values()))
-        flexible_key = "item_name" if "item_name" in desired_widths else next(iter(desired_widths), None)
-        for key, width in desired_widths.items():
-            # An empty table stays compact. Once data exists, Item Name uses
-            # the remaining room and grows further for long product names.
-            added = spare if self.rows and key == flexible_key else 0
-            final_width = width + added
-            self.tree.column(key, width=final_width, minwidth=self.column_minimum(key),
-                             stretch=False)
-        if self._last_table_width >= sum(desired_widths.values()):
-            # If the table used to require horizontal scrolling, discard that
-            # stale offset once every column fits in the enlarged window.
-            self.tree.xview_moveto(0)
+    def column_resize_finished(self, _event=None):
+        if "item_name" not in self.tree["columns"]:
+            return
+        width = self.tree.column("item_name", "width")
+        if width == getattr(self, "_last_item_name_width", width):
+            return
+        self._last_item_name_width = width
+        self.prepare_tree_display_values()
+        self.render_current_rows()
 
     @staticmethod
     def column_minimum(key):
@@ -686,14 +649,16 @@ class ReportApp(ctk.CTk):
             self.render_rows.extend(("row", row) for row in self.rows)
         for row_type, value in self.render_rows:
             if row_type == "category":
-                values = [value.upper()] + [""] * (len(self.columns) - 1)
+                values = [getattr(self, "_wrapped_categories", {}).get(value, value.upper())] + [""] * (len(self.columns) - 1)
                 self.tree.insert("", "end", values=values, tags=("category_header",))
             elif row_type == "subtotal":
                 category, rows = value
-                self.tree.insert("", "end", values=self.category_total_row(category, rows),
+                values = self.category_total_row(category, rows)
+                values[0] = getattr(self, "_wrapped_category_totals", {}).get(category, values[0])
+                self.tree.insert("", "end", values=values,
                                  tags=("category_total",))
             else:
-                display_values = value.get("__display_values")
+                display_values = value.get("__tree_display_values") or value.get("__display_values")
                 if display_values is None:
                     display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
                 tags = self.row_tags(value)
@@ -1191,6 +1156,62 @@ class ReportApp(ctk.CTk):
             return f"{value}  {marker}"
         return value
 
+    def prepare_tree_display_values(self):
+        """Wrap product names inside the user-selected fixed column width."""
+        if not hasattr(self, "tree") or "item_name" not in self.tree["columns"]:
+            return
+        keys = [key for key, _, _ in self.columns]
+        name_index = keys.index("item_name")
+        available = max(40, int(self.tree.column("item_name", "width")) - 24)
+        font = tkfont.Font(family="Segoe UI", size=10)
+        maximum_lines = 1
+        for row in self.rows:
+            values = list(row.get("__display_values") or
+                          tuple(self.row_display(row, key) for key in keys))
+            wrapped = self.wrap_tree_text(str(values[name_index] or ""), available, font)
+            values[name_index] = wrapped
+            maximum_lines = max(maximum_lines, wrapped.count("\n") + 1)
+            row["__tree_display_values"] = tuple(values)
+        self._wrapped_categories = {}
+        self._wrapped_category_totals = {}
+        if self.group_categories.get():
+            first_key = keys[0]
+            first_available = max(40, int(self.tree.column(first_key, "width")) - 20)
+            category_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
+            for category, _rows in self.grouped_report_rows():
+                heading = self.wrap_tree_text(category.upper(), first_available, category_font)
+                total = self.wrap_tree_text(f"{category} TOTAL", first_available, font)
+                self._wrapped_categories[category] = heading
+                self._wrapped_category_totals[category] = total
+                maximum_lines = max(maximum_lines, heading.count("\n") + 1,
+                                    total.count("\n") + 1)
+        ttk.Style(self).configure("Report.Treeview", rowheight=34 + (maximum_lines - 1) * 16)
+
+    @staticmethod
+    def wrap_tree_text(text, available, font):
+        if not text or font.measure(text) <= available:
+            return text
+        lines, current = [], ""
+        for word in text.split():
+            candidate = word if not current else f"{current} {word}"
+            if font.measure(candidate) <= available:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            # Split an unusually long unbroken word without overflowing.
+            for character in word:
+                candidate = current + character
+                if current and font.measure(candidate) > available:
+                    lines.append(current)
+                    current = character
+                else:
+                    current = candidate
+        if current:
+            lines.append(current)
+        return "\n".join(lines)
+
     @staticmethod
     def row_tags(row):
         if row.get("__sale_status") == "discount":
@@ -1311,14 +1332,16 @@ class ReportApp(ctk.CTk):
         end = min(start + batch_size, len(self.render_rows))
         for row_type, value in self.render_rows[start:end]:
             if row_type == "category":
-                values = [value.upper()] + [""] * (len(self.columns) - 1)
+                values = [getattr(self, "_wrapped_categories", {}).get(value, value.upper())] + [""] * (len(self.columns) - 1)
                 self.tree.insert("", "end", values=values, tags=("category_header",))
             elif row_type == "subtotal":
                 category, rows = value
-                self.tree.insert("", "end", values=self.category_total_row(category, rows),
+                values = self.category_total_row(category, rows)
+                values[0] = getattr(self, "_wrapped_category_totals", {}).get(category, values[0])
+                self.tree.insert("", "end", values=values,
                                  tags=("category_total",))
             else:
-                display_values = value.get("__display_values")
+                display_values = value.get("__tree_display_values") or value.get("__display_values")
                 if display_values is None:
                     display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
                 tags = self.row_tags(value)
