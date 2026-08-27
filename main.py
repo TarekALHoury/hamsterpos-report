@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -602,8 +602,19 @@ class ReportApp(ctk.CTk):
         # uneven-looking gaps between every heading.
         spare = max(0, self._last_table_width - sum(desired_widths.values()))
         flexible_key = "item_name" if "item_name" in desired_widths else next(iter(desired_widths), None)
-        for key, width in desired_widths.items():
-            final_width = width + (spare if key == flexible_key else 0)
+        remaining_spare = spare
+        base_total = max(1, sum(desired_widths.values()))
+        items = list(desired_widths.items())
+        for index, (key, width) in enumerate(items):
+            if not self.rows and spare:
+                # With no data, there is no product name that deserves all the
+                # flexible space. Scale every heading proportionally instead.
+                added = (remaining_spare if index == len(items) - 1
+                         else min(remaining_spare, round(spare * width / base_total)))
+                remaining_spare -= added
+            else:
+                added = spare if key == flexible_key else 0
+            final_width = width + added
             self.tree.column(key, width=final_width, minwidth=self.column_minimum(key),
                              stretch=False)
         if self._last_table_width >= sum(desired_widths.values()):
