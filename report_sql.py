@@ -9,7 +9,7 @@ SELECT
     sold_at, barcode, item_name, payment_method, sell_price, actual_sell_price,
     regular_sell_price, explicit_discount_amount, price_level,
     SUM(qty_sold) AS qty_sold,
-    SUM(sales) AS sales,
+    SUM(sales - explicit_discount_amount) AS sales,
     category
 FROM (
 SELECT
@@ -170,7 +170,9 @@ CLOSE_CASH_SQL = """
 SELECT movement_at, ticket_no, barcode, item_name, payment_method,
        sell_price, regular_sell_price, explicit_discount_amount, price_level,
        SUM(qty_in) AS qty_in, SUM(qty_out) AS qty_out,
-       SUM(total_sold) AS total_sold, SUM(total_bought) AS total_bought,
+       SUM(total_sold - CASE WHEN movement_type = 'Sold'
+                             THEN explicit_discount_amount ELSE 0 END) AS total_sold,
+       SUM(total_bought) AS total_bought,
        category, movement_type
 FROM (
     SELECT r.datenew AS movement_at, t.ticketid AS ticket_no,
