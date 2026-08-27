@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.3"
+APP_VERSION = "4.4"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -408,6 +408,9 @@ class ReportApp(ctk.CTk):
         self.active_calendar = None
         self.report_filter_states = {}
         self.end_time_live = True
+        self.suspend_live_filters = False
+        self.live_filter_job = None
+        self.query_generation = 0
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
@@ -440,8 +443,8 @@ class ReportApp(ctk.CTk):
 
         filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=14); filters.pack(fill="x", padx=28, pady=8)
         now = datetime.now().replace(second=0, microsecond=0); midnight = now.replace(hour=0, minute=0)
-        self.start_field = DateTimeField(filters, "Start date & time", midnight); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
-        self.end_field = DateTimeField(filters, "End date & time", now, self.disable_live_end_time); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
+        self.start_field = DateTimeField(filters, "Start date & time", midnight, self.live_date_filter_changed); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
+        self.end_field = DateTimeField(filters, "End date & time", now, self.live_end_filter_changed); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
         box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
         ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd")).pack(anchor="w")
         self.search_placeholder = "Barcode, name, or reference"
@@ -467,17 +470,17 @@ class ReportApp(ctk.CTk):
         self.cash_filters = ctk.CTkFrame(filters, fg_color="transparent")
         ctk.CTkLabel(self.cash_filters, text="Close cash sequence", text_color=("#475569", "#9aa9bd")).grid(row=0, column=0, sticky="w", padx=(0, 12))
         ctk.CTkLabel(self.cash_filters, text="Movement", text_color=("#475569", "#9aa9bd")).grid(row=0, column=1, sticky="w")
-        self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410)
+        self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410, command=self.live_filter_changed)
         self.cash_menu.grid(row=1, column=0, padx=(0, 12))
-        self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140)
+        self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140, command=self.live_filter_changed)
         self.movement_menu.set("All"); self.movement_menu.grid(row=1, column=1)
 
         filter2 = ctk.CTkFrame(main, fg_color="transparent"); filter2.pack(fill="x", padx=28, pady=7)
-        self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170); self.category_menu.pack(side="left", padx=(0, 8))
-        self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165); self.sort_menu.pack(side="left")
-        self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165)
+        self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170, command=self.live_filter_changed); self.category_menu.pack(side="left", padx=(0, 8))
+        self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165, command=self.live_filter_changed); self.sort_menu.pack(side="left")
+        self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165, command=self.live_filter_changed)
         self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
-        self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165)
+        self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, command=self.live_filter_changed)
         self.reason_menu.set("All reasons")
         self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145)
         self.group_check.pack(side="left", padx=(2, 8))
@@ -716,6 +719,7 @@ class ReportApp(ctk.CTk):
         # Navigation should never leave the shared search field visually focused
         # on the report being opened.
         self.focus_set()
+        self.suspend_live_filters = True
         self.set_window_redraw(False)
         try:
             self.report_type.set(kind); self.rows = self.report_rows_cache[kind]
@@ -745,6 +749,7 @@ class ReportApp(ctk.CTk):
             self.update_totals()
             self.update_idletasks()
         finally:
+            self.suspend_live_filters = False
             self.set_window_redraw(True)
 
     def show_empty_state(self):
@@ -793,6 +798,35 @@ class ReportApp(ctk.CTk):
             self.search_hint.place_forget()
         else:
             self._update_search_hint()
+        self.schedule_live_filter(450)
+
+    def live_filter_changed(self, _value=None):
+        self.schedule_live_filter(80)
+
+    def live_date_filter_changed(self):
+        self.schedule_live_filter(450)
+
+    def live_end_filter_changed(self):
+        self.disable_live_end_time()
+        self.schedule_live_filter(450)
+
+    def schedule_live_filter(self, delay=120):
+        if self.suspend_live_filters or not self.config_data.get("database"):
+            return
+        if self.live_filter_job is not None:
+            try: self.after_cancel(self.live_filter_job)
+            except Exception: pass
+        self.live_filter_job = self.after(delay, self.apply_live_filters)
+
+    def apply_live_filters(self):
+        self.live_filter_job = None
+        try:
+            self.query_parameters()
+        except Exception:
+            # Date/time fields may be temporarily incomplete while typing.
+            self.status.configure(text="Finish entering a valid filter value", text_color="#f0aa5b")
+            return
+        self.run_report()
 
     def _update_search_hint(self, force_visible=False):
         if self.search_var.get():
@@ -1063,16 +1097,23 @@ class ReportApp(ctk.CTk):
         template = {"sales": SALES_SQL, "purchases": PURCHASES_SQL, "cash": CLOSE_CASH_SQL}[kind]
         query = template.format(order_clause=self.order_clause())
         column_keys = [column[0] for column in self.columns]
+        self.query_generation += 1
+        query_generation = self.query_generation
         self.run_btn.configure(state="disabled", text="Run Report"); self.refresh_btn.configure(state="disabled")
         self.status.configure(text="Refreshing all data…" if refreshing else "Loading report…", text_color="#3b82f6")
         self.load_started = time.monotonic()
         self.loading_bar.pack(fill="x", pady=1)
         self.loading_bar.start()
-        threading.Thread(target=self._query_worker, args=(kind, query, params, column_keys, refreshing), daemon=True).start()
+        threading.Thread(target=self._query_worker, args=(kind, query, params, column_keys, refreshing, query_generation), daemon=True).start()
 
     def refresh_report(self):
         # Refresh is also the report's reset action: return every filter to its
         # predictable default before fetching the newest database state.
+        if self.live_filter_job is not None:
+            try: self.after_cancel(self.live_filter_job)
+            except Exception: pass
+            self.live_filter_job = None
+        self.suspend_live_filters = True
         now = datetime.now().replace(second=0, microsecond=0)
         self.end_time_live = True
         self.start_field.set_datetime(now.replace(hour=0, minute=0))
@@ -1087,9 +1128,10 @@ class ReportApp(ctk.CTk):
         if self.report_type.get() == "cash" and self.cash_sequences:
             self.cash_menu.set(next(iter(self.cash_sequences)))
         self.report_filter_states.pop(self.report_type.get(), None)
+        self.suspend_live_filters = False
         self.run_report(refreshing=True)
 
-    def _query_worker(self, kind, query, params, column_keys, refreshing):
+    def _query_worker(self, kind, query, params, column_keys, refreshing, query_generation):
         try:
             with db_connect(self.config_data) as conn:
                 conn.ping(reconnect=True)
@@ -1107,16 +1149,21 @@ class ReportApp(ctk.CTk):
                         categories = cur.fetchall()
                         cur.execute("SELECT money, hostsequence, datestart, dateend FROM closedcash ORDER BY datestart DESC LIMIT 500")
                         cash_rows = cur.fetchall()
-            self.after(0, lambda: self.finish_query_smooth(kind, rows, categories, cash_rows, refreshing))
-        except Exception as exc: self.after(0, lambda e=exc: self.query_failed(e))
+            self.after(0, lambda: self.finish_query_smooth(kind, rows, categories, cash_rows, refreshing, query_generation))
+        except Exception as exc: self.after(0, lambda e=exc: self.query_failed(e, query_generation))
 
-    def finish_query_smooth(self, kind, rows, categories, cash_rows, refreshed):
+    def finish_query_smooth(self, kind, rows, categories, cash_rows, refreshed, query_generation):
+        if query_generation != self.query_generation:
+            return
         minimum_ms = 550 if refreshed else 220
         elapsed_ms = int((time.monotonic() - self.load_started) * 1000)
         wait_ms = max(0, minimum_ms - elapsed_ms)
-        self.after(wait_ms, lambda: self.show_rows(kind, rows, categories, cash_rows, refreshed))
+        self.after(wait_ms, lambda: self.show_rows(kind, rows, categories, cash_rows, refreshed)
+                   if query_generation == self.query_generation else None)
 
-    def query_failed(self, exc):
+    def query_failed(self, exc, query_generation=None):
+        if query_generation is not None and query_generation != self.query_generation:
+            return
         self.stop_loading()
         self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
         self.status.configure(text=f"Report failed: {exc}", text_color="#ff7b7b")
