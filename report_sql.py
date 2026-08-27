@@ -36,7 +36,8 @@ SELECT
         WHERE discount_tl.ticket = tl.ticket
           AND discount_tl.line = tl.line + 1
           AND discount_tl.product IS NULL
-          AND CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Line Discount%%'
+          AND (CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Line Discount%%'
+               OR CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Total Discount%%')
         LIMIT 1
     ), 0) AS explicit_discount_amount,
     tl.price_level AS price_level,
@@ -196,7 +197,8 @@ FROM (
                WHERE discount_tl.ticket = tl.ticket
                  AND discount_tl.line = tl.line + 1
                  AND discount_tl.product IS NULL
-                 AND CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Line Discount%%'
+                 AND (CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Line Discount%%'
+                      OR CONVERT(discount_tl.attributes USING utf8mb4) LIKE '%%Total Discount%%')
                LIMIT 1
            ), 0) AS explicit_discount_amount,
            tl.price_level AS price_level,
