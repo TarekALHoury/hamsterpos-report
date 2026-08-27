@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.7"
+APP_VERSION = "4.8"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -493,7 +493,12 @@ class ReportApp(ctk.CTk):
         self.loading_bar = ctk.CTkProgressBar(self.loading_holder, height=3, corner_radius=0, mode="indeterminate")
         self.loading_bar.set(0)
 
-        table_frame = ctk.CTkFrame(main, fg_color=("#ffffff", "#111827"), corner_radius=14); table_frame.pack(fill="both", expand=True, padx=28, pady=(8, 12))
+        self.table_holder = ctk.CTkFrame(main, fg_color="transparent", corner_radius=0)
+        self.table_holder.pack(fill="both", expand=True)
+        table_frame = ctk.CTkFrame(self.table_holder, fg_color=("#ffffff", "#111827"), corner_radius=14)
+        self.table_frame = table_frame
+        table_frame.place(x=28, y=8, width=900, relheight=1, height=-20)
+        self.table_holder.bind("<Configure>", self.update_table_viewport, add="+")
         style = ttk.Style(self); style.theme_use("clam")
         style.configure("Report.Treeview", background="#111827", fieldbackground="#111827", foreground="#e5edf8", rowheight=34, borderwidth=0, font=("Segoe UI", 10))
         style.configure("Report.Treeview.Heading", background="#1f2937", foreground="#a9b8cc", borderwidth=0, relief="flat", font=("Segoe UI", 10, "bold"))
@@ -528,6 +533,15 @@ class ReportApp(ctk.CTk):
         self.total_cards = []
         self.configure_columns()
 
+    def update_table_viewport(self, event=None):
+        if not hasattr(self, "table_frame") or not hasattr(self, "tree"):
+            return
+        holder_width = event.width if event is not None else self.table_holder.winfo_width()
+        available_width = max(320, holder_width - 56)
+        column_width = sum(int(self.tree.column(key, "width")) for key in self.tree["columns"])
+        preferred_width = column_width + 30  # vertical scrollbar, borders, and padding
+        self.table_frame.place_configure(width=min(available_width, preferred_width))
+
     @property
     def columns(self):
         return SALES_COLUMNS if self.report_type.get() == "sales" else (PURCHASE_COLUMNS if self.report_type.get() == "purchases" else CLOSE_CASH_COLUMNS)
@@ -538,14 +552,18 @@ class ReportApp(ctk.CTk):
         self.hide_empty_state()
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
         heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        numeric_columns = {"buy_price", "sell_price", "qty_sold", "qty_purchased",
+                           "total_buy_price", "sales", "qty_in", "qty_out",
+                           "total_sold", "total_bought"}
         for key, title, width in self.columns:
-            align = "w" if key in ("item_name", "supplier_name", "price_status") else "center"
+            align = "e" if key in numeric_columns else "w"
             self.tree.heading(key, text=title, anchor=align)
             minimum = self.column_minimum(key)
             fixed_width = max(width, minimum, heading_font.measure(title) + 24)
             self.tree.column(key, width=fixed_width, minwidth=minimum, anchor=align, stretch=False)
         self._last_item_name_width = self.tree.column("item_name", "width") if "item_name" in self.tree["columns"] else 0
         self.tree.xview_moveto(0)
+        self.after_idle(self.update_table_viewport)
 
     def schedule_column_resize(self, event=None):
         width = event.width if event is not None else self.tree.winfo_width()
@@ -574,6 +592,7 @@ class ReportApp(ctk.CTk):
         if width == getattr(self, "_last_item_name_width", width):
             return
         self._last_item_name_width = width
+        self.update_table_viewport()
         self.prepare_tree_display_values()
         self.render_current_rows()
 

@@ -148,7 +148,7 @@ ORDER BY {order_clause}
 SALES_COLUMNS = (
     ("sold_at", "Date & Time", 125),
     ("barcode", "Item Barcode", 105),
-    ("item_name", "Item Name", 225),
+    ("item_name", "Item Name", 180),
     ("payment_method", "Payment Method", 125),
     ("sell_price", "Sell Price", 90),
     ("price_status", "Price Status", 175),
@@ -159,7 +159,7 @@ SALES_COLUMNS = (
 PURCHASE_COLUMNS = (
     ("purchased_at", "Date & Time", 125),
     ("barcode", "Item Barcode", 105),
-    ("item_name", "Item Name", 210),
+    ("item_name", "Item Name", 180),
     ("payment_method", "Payment Method", 125),
     ("buy_price", "Item Buy Price", 105),
     ("supplier_name", "Supplier Name", 140),
@@ -348,7 +348,7 @@ CLOSE_CASH_COLUMNS = (
     ("movement_at", "Date & Time", 125),
     ("ticket_no", "Ticket No.", 80),
     ("barcode", "Item Barcode", 105),
-    ("item_name", "Item Name", 220),
+    ("item_name", "Item Name", 180),
     ("payment_method", "Payment Method", 120),
     ("price_status", "Price Status", 175),
     ("qty_in", "In", 65),
