@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "4.8"
+APP_VERSION = "4.9"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -494,10 +494,11 @@ class ReportApp(ctk.CTk):
         self.loading_bar.set(0)
 
         self.table_holder = ctk.CTkFrame(main, fg_color="transparent", corner_radius=0)
-        self.table_holder.pack(fill="both", expand=True)
-        table_frame = ctk.CTkFrame(self.table_holder, fg_color=("#ffffff", "#111827"), corner_radius=14)
+        self.table_holder.pack(fill="both", expand=True, padx=28, pady=(8, 12))
+        table_frame = ctk.CTkFrame(self.table_holder, width=900, height=600,
+                                   fg_color=("#ffffff", "#111827"), corner_radius=14)
         self.table_frame = table_frame
-        table_frame.place(x=28, y=8, width=900, relheight=1, height=-20)
+        table_frame.place(x=0, y=0, relheight=1)
         self.table_holder.bind("<Configure>", self.update_table_viewport, add="+")
         style = ttk.Style(self); style.theme_use("clam")
         style.configure("Report.Treeview", background="#111827", fieldbackground="#111827", foreground="#e5edf8", rowheight=34, borderwidth=0, font=("Segoe UI", 10))
@@ -537,10 +538,10 @@ class ReportApp(ctk.CTk):
         if not hasattr(self, "table_frame") or not hasattr(self, "tree"):
             return
         holder_width = event.width if event is not None else self.table_holder.winfo_width()
-        available_width = max(320, holder_width - 56)
+        available_width = max(320, holder_width)
         column_width = sum(int(self.tree.column(key, "width")) for key in self.tree["columns"])
         preferred_width = column_width + 30  # vertical scrollbar, borders, and padding
-        self.table_frame.place_configure(width=min(available_width, preferred_width))
+        self.table_frame.configure(width=min(available_width, preferred_width))
 
     @property
     def columns(self):
