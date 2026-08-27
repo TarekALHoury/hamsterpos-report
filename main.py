@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.5"
+APP_VERSION = "5.6"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -1204,21 +1204,28 @@ class ReportApp(ctk.CTk):
         # Every other column keeps the normal compact row height.
         wrap_keys = {"item_name"}
         font = tkfont.Font(family="Segoe UI", size=10)
-        # Grow Item Name only when the current width cannot contain the actual
-        # product text. Short names leave the column untouched. Extremely long
-        # names stop at a practical limit and use the existing wrapping logic.
-        item_index = keys.index("item_name")
-        current_name_width = int(self.tree.column("item_name", "width"))
-        longest_name_width = max(
-            (font.measure(str((row.get("__display_values") or
-                               tuple(self.row_display(row, key) for key in keys))[item_index] or ""))
-             for row in self.rows),
-            default=0,
-        )
-        desired_name_width = min(720, max(current_name_width, longest_name_width + 28))
-        if desired_name_width > current_name_width:
-            self.tree.column("item_name", width=desired_name_width)
-            self._last_column_widths["item_name"] = desired_name_width
+        # Grow text-heavy columns only when their actual content needs space.
+        # Item Name retains a larger limit; Price Status expands enough for
+        # discount/change details while blank and Regular values stay compact.
+        widths_changed = False
+        for auto_key, maximum_width in (("item_name", 720), ("price_status", 460)):
+            if auto_key not in keys:
+                continue
+            value_index = keys.index(auto_key)
+            current_width = int(self.tree.column(auto_key, "width"))
+            longest_width = max(
+                (font.measure(str((row.get("__display_values") or
+                                   tuple(self.row_display(row, key) for key in keys))[value_index] or ""))
+                 for row in self.rows),
+                default=0,
+            )
+            desired_width = min(maximum_width, max(current_width, longest_width + 28))
+            if desired_width <= current_width:
+                continue
+            self.tree.column(auto_key, width=desired_width)
+            self._last_column_widths[auto_key] = desired_width
+            widths_changed = True
+        if widths_changed:
             self.after_idle(self.update_table_viewport)
         for row in self.rows:
             values = list(row.get("__display_values") or
