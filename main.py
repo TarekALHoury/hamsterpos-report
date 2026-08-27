@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.2"
+APP_VERSION = "5.3"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -569,13 +569,12 @@ class ReportApp(ctk.CTk):
         self._column_base_widths = None
         self.hide_empty_state()
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = [c[0] for c in self.columns]
-        numeric_columns = {"buy_price", "sell_price", "qty_sold", "qty_purchased",
-                           "total_buy_price", "sales", "qty_in", "qty_out",
-                           "total_sold", "total_bought"}
         heading_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         for key, title, width in self.columns:
-            align = "e" if key in numeric_columns else "w"
-            self.tree.heading(key, text=title, anchor="w")
+            # All report values sit directly beneath the center of their
+            # heading. Product names remain left aligned for natural reading.
+            align = "w" if key == "item_name" else "center"
+            self.tree.heading(key, text=title, anchor=align)
             # Every heading receives exactly the same trailing breathing room.
             # This prevents long labels from touching the next column while
             # avoiding the oversized gaps produced by content-based sizing.
