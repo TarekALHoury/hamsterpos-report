@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.4"
+APP_VERSION = "5.5"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -517,10 +517,7 @@ class ReportApp(ctk.CTk):
         self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
         self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
         vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview)
-        # The themed Tk scrollbar keeps a real draggable thumb even when the
-        # window is narrower than the fixed-width report. CTkScrollbar could
-        # visually collapse into its track and become practically unusable.
-        hs = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
         self.horizontal_scrollbar = hs
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=(8, 0)); vs.grid(row=0, column=1, sticky="ns", pady=(8, 0)); hs.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
@@ -1207,6 +1204,22 @@ class ReportApp(ctk.CTk):
         # Every other column keeps the normal compact row height.
         wrap_keys = {"item_name"}
         font = tkfont.Font(family="Segoe UI", size=10)
+        # Grow Item Name only when the current width cannot contain the actual
+        # product text. Short names leave the column untouched. Extremely long
+        # names stop at a practical limit and use the existing wrapping logic.
+        item_index = keys.index("item_name")
+        current_name_width = int(self.tree.column("item_name", "width"))
+        longest_name_width = max(
+            (font.measure(str((row.get("__display_values") or
+                               tuple(self.row_display(row, key) for key in keys))[item_index] or ""))
+             for row in self.rows),
+            default=0,
+        )
+        desired_name_width = min(720, max(current_name_width, longest_name_width + 28))
+        if desired_name_width > current_name_width:
+            self.tree.column("item_name", width=desired_name_width)
+            self._last_column_widths["item_name"] = desired_name_width
+            self.after_idle(self.update_table_viewport)
         for row in self.rows:
             values = list(row.get("__display_values") or
                           tuple(self.row_display(row, key) for key in keys))
