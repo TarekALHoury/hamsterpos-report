@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -635,6 +635,7 @@ class ReportApp(ctk.CTk):
                 self.show_empty_state()
             return
         self.hide_empty_state()
+        self.prepare_tree_display_values()
         self.render_rows = []
         if self.group_categories.get():
             for category, rows in self.grouped_report_rows():
@@ -681,11 +682,13 @@ class ReportApp(ctk.CTk):
                 self.tree.insert("", "end", values=values,
                                  tags=("category_total",))
             else:
-                display_values = value.get("__tree_display_values") or value.get("__display_values")
-                if display_values is None:
-                    display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
                 tags = self.row_tags(value)
-                self.tree.insert("", "end", values=display_values, tags=tags)
+                display_rows = value.get("__tree_display_rows")
+                if not display_rows:
+                    display_rows = [value.get("__display_values") or
+                                    tuple(self.row_display(value, key) for key, _, _ in self.columns)]
+                for display_values in display_rows:
+                    self.tree.insert("", "end", values=display_values, tags=tags)
 
     def configure_payment_filter(self, kind):
         purchase_methods = ["All payment methods", "Bank", "Cheque", "Cash", "Credit"]
@@ -1186,18 +1189,25 @@ class ReportApp(ctk.CTk):
         keys = [key for key, _, _ in self.columns]
         wrap_keys = {"item_name", "payment_method", "supplier_name", "price_status"}
         font = tkfont.Font(family="Segoe UI", size=10)
-        maximum_lines = 1
         for row in self.rows:
             values = list(row.get("__display_values") or
                           tuple(self.row_display(row, key) for key in keys))
+            wrapped_columns = {}
+            line_count = 1
             for index, key in enumerate(keys):
                 if key not in wrap_keys:
                     continue
                 available = max(40, int(self.tree.column(key, "width")) - 20)
-                wrapped = self.wrap_tree_text(str(values[index] or ""), available, font)
-                values[index] = wrapped
-                maximum_lines = max(maximum_lines, wrapped.count("\n") + 1)
-            row["__tree_display_values"] = tuple(values)
+                lines = self.wrap_tree_text(str(values[index] or ""), available, font).splitlines() or [""]
+                wrapped_columns[index] = lines
+                line_count = max(line_count, len(lines))
+            display_rows = []
+            for line_index in range(line_count):
+                display_line = list(values) if line_index == 0 else [""] * len(values)
+                for index, lines in wrapped_columns.items():
+                    display_line[index] = lines[line_index] if line_index < len(lines) else ""
+                display_rows.append(tuple(display_line))
+            row["__tree_display_rows"] = display_rows
         self._wrapped_categories = {}
         self._wrapped_category_totals = {}
         if self.group_categories.get():
@@ -1209,9 +1219,10 @@ class ReportApp(ctk.CTk):
                 total = self.wrap_tree_text(f"{category} TOTAL", first_available, font)
                 self._wrapped_categories[category] = heading
                 self._wrapped_category_totals[category] = total
-                maximum_lines = max(maximum_lines, heading.count("\n") + 1,
-                                    total.count("\n") + 1)
-        ttk.Style(self).configure("Report.Treeview", rowheight=34 + (maximum_lines - 1) * 16)
+        # Each physical Treeview row stays standard height. Wrapped logical rows
+        # receive continuation rows, so short products never inherit the height
+        # of the longest product in the report.
+        ttk.Style(self).configure("Report.Treeview", rowheight=34)
 
     @staticmethod
     def wrap_tree_text(text, available, font):
@@ -1367,11 +1378,13 @@ class ReportApp(ctk.CTk):
                 self.tree.insert("", "end", values=values,
                                  tags=("category_total",))
             else:
-                display_values = value.get("__tree_display_values") or value.get("__display_values")
-                if display_values is None:
-                    display_values = tuple(self.row_display(value, key) for key, _, _ in self.columns)
                 tags = self.row_tags(value)
-                self.tree.insert("", "end", values=display_values, tags=tags)
+                display_rows = value.get("__tree_display_rows")
+                if not display_rows:
+                    display_rows = [value.get("__display_values") or
+                                    tuple(self.row_display(value, key) for key, _, _ in self.columns)]
+                for display_values in display_rows:
+                    self.tree.insert("", "end", values=display_values, tags=tags)
         if end < len(self.render_rows):
             self.after(1, lambda: self._insert_row_batch(end, refreshed, generation, finalize))
             return
