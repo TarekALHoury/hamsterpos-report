@@ -1,5 +1,5 @@
 #define MyAppName "HamsterPOS Reports"
-#define MyAppVersion "5.6"
+#define MyAppVersion "5.7"
 #define MyAppPublisher "HamsterPOS Reports"
 #define MyAppExeName "report.exe"
 

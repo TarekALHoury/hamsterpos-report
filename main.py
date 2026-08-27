@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.6"
+APP_VERSION = "5.7"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -1191,8 +1191,8 @@ class ReportApp(ctk.CTk):
         value = self.display(row.get(key), key)
         change = row.get("__price_change", 0)
         if key == "buy_price" and change:
-            marker = ("UP - CHANGED" if change > 0 else "DOWN - CHANGED") if pdf else ("▲ Changed" if change > 0 else "▼ Changed")
-            return f"{value}  {marker}"
+            marker = "▲" if change > 0 else "▼"
+            return f"{marker} {value}"
         return value
 
     def prepare_tree_display_values(self):
