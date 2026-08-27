@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.7"
+APP_VERSION = "5.8"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -1192,7 +1192,10 @@ class ReportApp(ctk.CTk):
         change = row.get("__price_change", 0)
         if key == "buy_price" and change:
             marker = "▲" if change > 0 else "▼"
-            return f"{marker} {value}"
+            # The invisible suffix matches the rendered width of "▲ "/"▼ "
+            # in Segoe UI, keeping the monetary value itself centered beneath
+            # unchanged prices while the indicator remains before it.
+            return f"{marker} {value}\u2003\u2006"
         return value
 
     def prepare_tree_display_values(self):
