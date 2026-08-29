@@ -39,7 +39,7 @@ from storage.notification_history import NotificationHistory
 from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "6.5"
+APP_VERSION = "6.6"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
@@ -1040,8 +1040,7 @@ class ReportApp(ctk.CTk):
             self.movement_menu.set("All")
             if kind == "subscriptions":
                 now = datetime.now().replace(second=0, microsecond=0)
-                self.start_field.set_datetime(
-                    (now - timedelta(days=365)).replace(hour=0, minute=0))
+                self.start_field.set_datetime(now.replace(hour=0, minute=0))
                 self.end_field.set_datetime(
                     (now + timedelta(days=365)).replace(hour=23, minute=59))
                 self.end_time_live = False
@@ -1348,8 +1347,7 @@ class ReportApp(ctk.CTk):
         now = datetime.now().replace(second=0, microsecond=0)
         if self.report_type.get() == "subscriptions":
             self.end_time_live = False
-            self.start_field.set_datetime(
-                (now - timedelta(days=365)).replace(hour=0, minute=0))
+            self.start_field.set_datetime(now.replace(hour=0, minute=0))
             self.end_field.set_datetime(
                 (now + timedelta(days=365)).replace(hour=23, minute=59))
         else:
