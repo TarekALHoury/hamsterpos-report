@@ -81,6 +81,7 @@ SELECT
     t.ticketid AS ticket_number,
     t.customer AS customer_id,
     COALESCE(NULLIF(TRIM(c.name), ''), 'Customer') AS customer_name,
+    COALESCE(NULLIF(TRIM(c.phone), ''), '') AS customer_phone,
     tl.ss AS start_date,
     tl.se AS expiry_date,
     (tl.units * tl.price) AS amount,

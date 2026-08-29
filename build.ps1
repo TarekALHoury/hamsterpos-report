@@ -18,6 +18,7 @@ if (-not $python) { throw 'Python 3 was not found.' }
 & $python -m PyInstaller --noconfirm --clean --onefile --windowed --name report `
   --icon assets\app_icon.ico `
   --add-data "assets\app_icon.ico;assets" `
+  --add-data "assets\app_icon.png;assets" `
   --collect-data customtkinter `
   --collect-submodules pystray `
   --collect-all windows_toasts `

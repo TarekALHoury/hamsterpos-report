@@ -39,7 +39,7 @@ from storage.notification_history import NotificationHistory
 from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "6.3"
+APP_VERSION = "6.4"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
@@ -479,7 +479,8 @@ class ReportApp(ctk.CTk):
     def setup_background_services(self):
         self.notification_history = NotificationHistory(
             APP_DIR / "subscription_notifications.db")
-        self.notification_service = NotificationService(APP_NAME)
+        self.notification_service = NotificationService(
+            APP_NAME, resource_path("assets/app_icon.png"))
         self.subscription_monitor = SubscriptionMonitor(
             config_provider=lambda: dict(self.config_data),
             connection_factory=db_connect,
