@@ -20,6 +20,7 @@ SELECT
                 WHEN 'cash' THEN 'Cash' WHEN 'cashrefund' THEN 'Cash'
                 WHEN 'cheque' THEN 'Cheque' WHEN 'voucher' THEN 'Voucher'
                 WHEN 'magcard' THEN 'Card' WHEN 'card' THEN 'Card'
+                WHEN 'ccard' THEN 'Card'
                 WHEN 'free' THEN 'Free' WHEN 'debt' THEN 'Debt'
                 WHEN 'prepaid' THEN 'VIP Points' WHEN 'bank' THEN 'Bank'
                 WHEN 'slip' THEN 'Slip' WHEN 'mobile' THEN 'Mobile'
@@ -112,7 +113,7 @@ SELECT
           AND (pay.ref = sd.id OR
                (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND pay.ref = sd.supplierdoc) OR
                (COALESCE(TRIM(sd.supplierdoc), '') = '' AND COALESCE(TRIM(pay.ref), '') = ''
-                AND pay_receipt.datenew = sd.datenew))
+                AND ABS(TIMESTAMPDIFF(SECOND, pay_receipt.datenew, sd.datenew)) <= 2))
           AND DATE(pay_receipt.datenew) = DATE(sd.datenew)
         ORDER BY pay_receipt.datenew DESC, pay.id DESC
         LIMIT 1
@@ -183,6 +184,7 @@ FROM (
                    WHEN 'cash' THEN 'Cash' WHEN 'cashrefund' THEN 'Cash'
                    WHEN 'cheque' THEN 'Cheque' WHEN 'voucher' THEN 'Voucher'
                    WHEN 'magcard' THEN 'Card' WHEN 'card' THEN 'Card'
+                   WHEN 'ccard' THEN 'Card'
                    WHEN 'free' THEN 'Free' WHEN 'debt' THEN 'Debt'
                    WHEN 'prepaid' THEN 'VIP Points' WHEN 'bank' THEN 'Bank'
                    WHEN 'slip' THEN 'Slip' WHEN 'mobile' THEN 'Mobile'
@@ -231,6 +233,7 @@ FROM (
                    WHEN 'cash' THEN 'Cash' WHEN 'cashrefund' THEN 'Cash'
                    WHEN 'cheque' THEN 'Cheque' WHEN 'voucher' THEN 'Voucher'
                    WHEN 'magcard' THEN 'Card' WHEN 'card' THEN 'Card'
+                   WHEN 'ccard' THEN 'Card'
                    WHEN 'free' THEN 'Free' WHEN 'debt' THEN 'Debt'
                    WHEN 'prepaid' THEN 'VIP Points' WHEN 'bank' THEN 'Bank'
                    WHEN 'slip' THEN 'Slip' WHEN 'mobile' THEN 'Mobile'
@@ -299,7 +302,7 @@ FROM (
                  AND (pay.ref = sd.id OR
                       (COALESCE(TRIM(sd.supplierdoc), '') <> '' AND pay.ref = sd.supplierdoc) OR
                       (COALESCE(TRIM(sd.supplierdoc), '') = '' AND COALESCE(TRIM(pay.ref), '') = ''
-                       AND pay_receipt.datenew = sd.datenew))
+                       AND ABS(TIMESTAMPDIFF(SECOND, pay_receipt.datenew, sd.datenew)) <= 2))
                  AND DATE(pay_receipt.datenew) = DATE(sd.datenew)
                ORDER BY pay_receipt.datenew DESC, pay.id DESC
                LIMIT 1

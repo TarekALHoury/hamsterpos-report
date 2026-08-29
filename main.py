@@ -32,7 +32,7 @@ from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.8"
+APP_VERSION = "5.9"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
