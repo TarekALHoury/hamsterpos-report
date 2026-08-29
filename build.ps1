@@ -19,6 +19,9 @@ if (-not $python) { throw 'Python 3 was not found.' }
   --icon assets\app_icon.ico `
   --add-data "assets\app_icon.ico;assets" `
   --collect-data customtkinter `
+  --collect-submodules pystray `
+  --collect-all windows_toasts `
+  --collect-submodules winrt `
   --exclude-module matplotlib --exclude-module numpy --exclude-module pandas `
   main.py
 

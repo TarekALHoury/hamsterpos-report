@@ -4,6 +4,7 @@ import calendar
 import ctypes
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -30,9 +31,14 @@ from xml.sax.saxutils import escape
 
 from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
+from services.notification_service import NotificationService
+from services.startup_service import is_frozen_executable, set_start_with_windows
+from services.subscription_monitor import SubscriptionMonitor
+from services.tray_service import TrayService
+from storage.notification_history import NotificationHistory
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.9"
+APP_VERSION = "5.10"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
@@ -102,7 +108,13 @@ def unprotect(value: str) -> str:
 
 
 def load_config() -> dict[str, Any]:
-    defaults = {"host": "localhost", "port": 3306, "database": "", "username": "", "password": "", "purchase_reason": "1", "currency": "$", "appearance": "Dark"}
+    defaults = {
+        "host": "localhost", "port": 3306, "database": "", "username": "",
+        "password": "", "purchase_reason": "1", "currency": "$",
+        "appearance": "Dark", "subscription_notifications_enabled": True,
+        "start_with_windows": False, "subscription_notify_days": 2,
+        "subscription_check_minutes": 60,
+    }
     if not CONFIG_FILE.exists():
         return defaults
     try:
@@ -291,8 +303,8 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent, config, on_saved):
         super().__init__(parent)
         self.config_data, self.on_saved = config, on_saved
-        self.title("Database settings")
-        self.geometry("520x650")
+        self.title("Settings")
+        self.geometry("540x790")
         self.resizable(False, False)
         self.transient(parent); self.grab_set()
         ctk.CTkLabel(self, text="Database connection", font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=30, pady=(28, 4))
@@ -319,6 +331,29 @@ class SettingsDialog(ctk.CTkToplevel):
                 entry = ctk.CTkEntry(form, show="•" if key == "password" else "")
                 entry.insert(0, str(config.get(key, ""))); entry.pack(fill="x", padx=12)
             self.entries[key] = entry
+        ctk.CTkLabel(form, text="Subscription notifications",
+                     font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=12, pady=(24, 8))
+        self.notification_enabled_var = ctk.BooleanVar(
+            value=bool(config.get("subscription_notifications_enabled", True)))
+        self.start_with_windows_var = ctk.BooleanVar(
+            value=bool(config.get("start_with_windows", False)))
+        ctk.CTkCheckBox(
+            form, text="Enable subscription expiry notifications",
+            variable=self.notification_enabled_var,
+        ).pack(anchor="w", padx=12, pady=5)
+        ctk.CTkCheckBox(
+            form, text="Start with Windows (silent in system tray)",
+            variable=self.start_with_windows_var,
+        ).pack(anchor="w", padx=12, pady=5)
+        for key, label, default in (
+            ("subscription_notify_days", "Notify before (days)", 2),
+            ("subscription_check_minutes", "Check every (minutes)", 60),
+        ):
+            ctk.CTkLabel(form, text=label).pack(anchor="w", padx=12, pady=(10, 3))
+            entry = ctk.CTkEntry(form)
+            entry.insert(0, str(config.get(key, default)))
+            entry.pack(fill="x", padx=12)
+            self.entries[key] = entry
         self.status = ctk.CTkLabel(self, text="", text_color="#f0aa5b", height=24); self.status.pack(pady=(6, 0))
         buttons = ctk.CTkFrame(self, fg_color="transparent"); buttons.pack(fill="x", padx=30, pady=(4, 18))
         ctk.CTkButton(buttons, text="Test connection", fg_color="#334155", command=self.test).pack(side="left")
@@ -329,6 +364,14 @@ class SettingsDialog(ctk.CTkToplevel):
     def values(self):
         values = {key: entry.get().strip() for key, entry in self.entries.items()}
         values["port"] = int(values["port"])
+        values["subscription_notify_days"] = int(values["subscription_notify_days"])
+        values["subscription_check_minutes"] = int(values["subscription_check_minutes"])
+        if values["subscription_notify_days"] < 0:
+            raise ValueError("Notify-before days cannot be negative.")
+        if values["subscription_check_minutes"] < 1:
+            raise ValueError("Check interval must be at least 1 minute.")
+        values["subscription_notifications_enabled"] = self.notification_enabled_var.get()
+        values["start_with_windows"] = self.start_with_windows_var.get()
         return values
 
     def test(self):
@@ -386,15 +429,22 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def save(self):
         try:
-            values = self.values(); save_config(values)
+            values = self.values()
+            set_start_with_windows(values["start_with_windows"])
+            save_config(values)
             self.config_data.clear(); self.config_data.update(values)
             self.on_saved(); self.destroy()
         except Exception as exc: messagebox.showerror(APP_NAME, str(exc), parent=self)
 
 
 class ReportApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, start_hidden=False):
         super().__init__()
+        self.start_hidden = start_hidden
+        self.exiting = False
+        self.background_events = queue.Queue()
+        if start_hidden:
+            self.withdraw()
         self.config_data = load_config()
         ctk.set_appearance_mode(self.config_data.get("appearance", "Dark")); ctk.set_default_color_theme("blue")
         self.title(f"{APP_NAME} — v{APP_VERSION}")
@@ -414,13 +464,96 @@ class ReportApp(ctk.CTk):
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.setup_background_services()
         self._theme_sync_job = None
         self._style_table(ctk.get_appearance_mode() == "Dark")
         if self.config_data.get("appearance") == "System":
             self._theme_sync_job = self.after(100, self.sync_system_table_theme)
         self.after(1000, self.update_live_end_time)
-        if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
+        if not self.config_data.get("database") and not start_hidden:
+            self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
+
+    def setup_background_services(self):
+        self.notification_history = NotificationHistory(
+            APP_DIR / "subscription_notifications.db")
+        self.notification_service = NotificationService(APP_NAME)
+        self.subscription_monitor = SubscriptionMonitor(
+            config_provider=lambda: dict(self.config_data),
+            connection_factory=db_connect,
+            notifier=self.notification_service,
+            history=self.notification_history,
+            on_complete=lambda result: self.background_events.put(
+                ("subscription_result", result)),
+        )
+        self.tray_service = TrayService(
+            resource_path("assets/app_icon.ico"), APP_NAME,
+            open_app=lambda: self.background_events.put(("action", self.show_report_window)),
+            check_now=lambda: self.background_events.put(("action", self.check_subscriptions_now)),
+            open_settings=lambda: self.background_events.put(("action", self.open_settings_from_tray)),
+            exit_app=lambda: self.background_events.put(("action", self.exit_application)),
+        )
+        self.tray_service.start()
+        self.subscription_monitor.start()
+        self.after(150, self.process_background_events)
+        if self.config_data.get("start_with_windows") and is_frozen_executable():
+            try:
+                set_start_with_windows(True)
+            except OSError:
+                pass
+
+    def show_report_window(self):
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        self.focus_force()
+
+    def hide_to_tray(self):
+        self.withdraw()
+
+    def open_settings_from_tray(self):
+        self.show_report_window()
+        self.open_settings()
+
+    def check_subscriptions_now(self):
+        self.status.configure(text="Checking subscription expiries...", text_color="#f0aa5b")
+        self.subscription_monitor.request_check()
+
+    def subscription_check_completed(self, result):
+        if self.exiting or not self.winfo_exists():
+            return
+        if result.get("error"):
+            self.status.configure(
+                text=f"Subscription check failed: {result['error']}", text_color="#ff6b6b")
+        else:
+            self.status.configure(
+                text=(f"Subscriptions checked: {result.get('checked', 0)} · "
+                      f"notifications: {result.get('notified', 0)}"),
+                text_color="#3ecf8e")
+
+    def process_background_events(self):
+        if self.exiting:
+            return
+        while True:
+            try:
+                event_type, value = self.background_events.get_nowait()
+            except queue.Empty:
+                break
+            if event_type == "action":
+                value()
+            elif event_type == "subscription_result":
+                self.subscription_check_completed(value)
+        if not self.exiting:
+            self.after(150, self.process_background_events)
+
+    def exit_application(self):
+        if self.exiting:
+            return
+        self.exiting = True
+        self.subscription_monitor.stop()
+        self.tray_service.stop()
+        self.destroy()
 
     def build_ui(self):
         sidebar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=("#edf2f7", "#101827")); sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
@@ -892,6 +1025,7 @@ class ReportApp(ctk.CTk):
                 row.pop("__display_values", None)
         self.render_current_rows()
         self.load_categories()
+        self.subscription_monitor.request_check()
 
     def change_theme(self, mode):
         if self._theme_sync_job is not None:
@@ -1611,4 +1745,7 @@ class ReportApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    ReportApp().mainloop()
+    app = ReportApp(start_hidden="--tray" in sys.argv[1:])
+    if "--smoke-test" in sys.argv[1:]:
+        app.after(2500, app.exit_application)
+    app.mainloop()
