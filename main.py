@@ -39,7 +39,7 @@ from storage.notification_history import NotificationHistory
 from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "6.6"
+APP_VERSION = "6.7"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
@@ -661,6 +661,8 @@ class ReportApp(ctk.CTk):
         self.tree.tag_configure("price_down", background="#12372a", foreground="#bbf7d0")
         self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
         self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
+        self.tree.tag_configure("subscription_ending", background="#4a3b0c", foreground="#fde68a")
+        self.tree.tag_configure("subscription_expired", background="#421b24", foreground="#fecdd3")
         vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview)
         hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
         self.horizontal_scrollbar = hs
@@ -1128,6 +1130,12 @@ class ReportApp(ctk.CTk):
                                 foreground="#fecdd3" if dark else "#9f1239")
         self.tree.tag_configure("sale_price_change", background="#12372a" if dark else "#dcfce7",
                                 foreground="#bbf7d0" if dark else "#166534")
+        self.tree.tag_configure("subscription_ending",
+                                background="#4a3b0c" if dark else "#fef3c7",
+                                foreground="#fde68a" if dark else "#92400e")
+        self.tree.tag_configure("subscription_expired",
+                                background="#421b24" if dark else "#fee2e2",
+                                foreground="#fecdd3" if dark else "#991b1b")
         self.tree.tag_configure("category_total", background="#17324d" if dark else "#dbeafe",
                                 foreground="#7dd3fc" if dark else "#12395b",
                                 font=("Segoe UI", 10, "bold"))
@@ -1526,6 +1534,10 @@ class ReportApp(ctk.CTk):
 
     @staticmethod
     def row_tags(row):
+        if row.get("expiry_status") == "Ending Soon":
+            return ("subscription_ending",)
+        if row.get("expiry_status") == "Expired":
+            return ("subscription_expired",)
         if row.get("__sale_status") == "discount":
             return ("sale_discount",)
         if row.get("__sale_status") == "changed":
