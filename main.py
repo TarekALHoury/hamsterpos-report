@@ -39,7 +39,7 @@ from storage.notification_history import NotificationHistory
 from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
@@ -1850,6 +1850,10 @@ class ReportApp(ctk.CTk):
 
 if __name__ == "__main__":
     app = ReportApp(start_hidden="--tray" in sys.argv[1:])
+    if "--toast-smoke-test" in sys.argv[1:]:
+        app.notification_service.show_status(
+            "HamsterPOS Reports", "Notification packaging test successful.")
+        app.after(1500, app.exit_application)
     if "--smoke-test" in sys.argv[1:]:
         app.after(2500, app.exit_application)
     app.mainloop()

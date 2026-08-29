@@ -22,6 +22,14 @@ if (-not $python) { throw 'Python 3 was not found.' }
   --collect-submodules pystray `
   --collect-all windows_toasts `
   --collect-submodules winrt `
+  --hidden-import winrt.windows.foundation `
+  --hidden-import winrt.windows.foundation.collections `
+  --hidden-import winrt.windows.data.xml.dom `
+  --hidden-import winrt.windows.ui.notifications `
+  --hidden-import winrt._winrt_windows_foundation `
+  --hidden-import winrt._winrt_windows_foundation_collections `
+  --hidden-import winrt._winrt_windows_data_xml_dom `
+  --hidden-import winrt._winrt_windows_ui_notifications `
   --exclude-module matplotlib --exclude-module numpy --exclude-module pandas `
   main.py
 
