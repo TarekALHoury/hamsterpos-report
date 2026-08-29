@@ -39,7 +39,8 @@ SELECT
     DATEDIFF(tl.se, CURDATE()) AS days_remaining,
     CASE
         WHEN tl.se < CURDATE() THEN 'Expired'
-        WHEN tl.se = CURDATE() THEN 'Expires Today'
+        WHEN DATEDIFF(tl.se, CURDATE()) BETWEEN 0 AND %(notify_days)s
+            THEN 'Ending Soon'
         ELSE 'Active'
     END AS expiry_status,
     (tl.units * tl.price) AS amount
