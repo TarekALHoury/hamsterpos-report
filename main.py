@@ -51,6 +51,16 @@ PURCHASE_REASONS = {
     "Transfer": 1000,
 }
 
+# Shared palette — customtkinter color values are always (light, dark) tuples.
+ACCENT = ("#3b6fe0", "#4f8cff")
+ACCENT_SOFT = ("#e9f0ff", "#17233a")
+ACCENT_TEXT = ("#2454c7", "#a9c6ff")
+BORDER = ("#e3e8f1", "#232d3f")
+SURFACE_ELEV = ("#eef2f8", "#1a2333")
+TEXT_MUTED = ("#64748b", "#8b98ad")
+CONTROL_RADIUS = 10
+CARD_RADIUS = 14
+
 
 def resource_path(relative_path: str) -> Path:
     """Resolve bundled PyInstaller assets and source-run assets."""
@@ -422,32 +432,51 @@ class ReportApp(ctk.CTk):
         if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
 
+    def build_nav_item(self, parent, key, icon, label, command):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=4)
+        indicator = ctk.CTkFrame(row, width=3, height=44, corner_radius=2, fg_color="transparent")
+        indicator.pack(side="left", fill="y"); indicator.pack_propagate(False)
+        button = ctk.CTkButton(row, text=f"{icon}  {label}", anchor="w", height=44,
+                               corner_radius=CONTROL_RADIUS, fg_color="transparent",
+                               text_color=TEXT_MUTED, hover_color=ACCENT_SOFT, command=command)
+        button.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        self.nav_indicators[key] = indicator
+        return button
+
     def build_ui(self):
-        sidebar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=("#edf2f7", "#101827")); sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
+        sidebar = ctk.CTkFrame(self, width=232, corner_radius=0, fg_color=("#edf2f7", "#101827")); sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
         ctk.CTkLabel(sidebar, text="HAMSTER", font=("Segoe UI", 12, "bold"), text_color="#38bdf8").pack(anchor="w", padx=24, pady=(30, 0))
-        ctk.CTkLabel(sidebar, text="Reports", font=("Segoe UI", 28, "bold")).pack(anchor="w", padx=24, pady=(0, 32))
-        self.nav_sales = ctk.CTkButton(sidebar, text="  Product Sales", anchor="w", height=46, text_color="#ffffff", command=lambda: self.switch_report("sales")); self.nav_sales.pack(fill="x", padx=14, pady=4)
-        self.nav_purchases = ctk.CTkButton(sidebar, text="  Purchased Products", anchor="w", height=46, fg_color="transparent", text_color=("#172033", "#f1f5f9"), command=lambda: self.switch_report("purchases")); self.nav_purchases.pack(fill="x", padx=14, pady=4)
-        self.nav_cash = ctk.CTkButton(sidebar, text="  Close Cash Movement", anchor="w", height=46, fg_color="transparent", text_color=("#172033", "#f1f5f9"), command=lambda: self.switch_report("cash")); self.nav_cash.pack(fill="x", padx=14, pady=4)
+        ctk.CTkLabel(sidebar, text="Reports", font=("Segoe UI", 28, "bold")).pack(anchor="w", padx=24, pady=(0, 26))
+        self.nav_indicators = {}
+        self.nav_sales = self.build_nav_item(sidebar, "sales", "▤", "Product Sales", lambda: self.switch_report("sales"))
+        self.nav_purchases = self.build_nav_item(sidebar, "purchases", "▣", "Purchased Products", lambda: self.switch_report("purchases"))
+        self.nav_cash = self.build_nav_item(sidebar, "cash", "◎", "Close Cash Movement", lambda: self.switch_report("cash"))
+        for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases), ("cash", self.nav_cash)):
+            active = nav_key == self.report_type.get()
+            nav_button.configure(fg_color=ACCENT_SOFT if active else "transparent",
+                                 text_color=ACCENT_TEXT if active else TEXT_MUTED)
+            self.nav_indicators[nav_key].configure(fg_color=ACCENT if active else "transparent")
         theme_box = ctk.CTkFrame(sidebar, fg_color="transparent")
         theme_box.pack(side="bottom", fill="x", padx=14, pady=(0, 6))
-        ctk.CTkLabel(theme_box, text="Appearance", text_color=("#475569", "#94a3b8")).pack(anchor="w", padx=10)
-        self.theme_menu = ctk.CTkOptionMenu(theme_box, values=["Dark", "Light", "System"], command=self.change_theme)
+        ctk.CTkLabel(theme_box, text="Appearance", text_color=TEXT_MUTED).pack(anchor="w", padx=10)
+        self.theme_menu = ctk.CTkSegmentedButton(theme_box, values=["Dark", "Light", "System"], corner_radius=CONTROL_RADIUS, command=self.change_theme)
         self.theme_menu.set(self.config_data.get("appearance", "Dark")); self.theme_menu.pack(fill="x", pady=4)
-        ctk.CTkButton(sidebar, text="⚙  Database settings", anchor="w", fg_color="transparent", text_color=("#172033", "#f1f5f9"), hover_color=("#d8e2ef", "#263449"), command=self.open_settings).pack(side="bottom", fill="x", padx=14, pady=22)
+        ctk.CTkButton(sidebar, text="⚙  Database settings", anchor="w", corner_radius=CONTROL_RADIUS, fg_color="transparent", text_color=TEXT_MUTED, hover_color=ACCENT_SOFT, command=self.open_settings).pack(side="bottom", fill="x", padx=14, pady=22)
+        ctk.CTkFrame(self, width=1, fg_color=BORDER).pack(side="left", fill="y")
 
         main = ctk.CTkFrame(self, corner_radius=0, fg_color=("#f7f9fc", "#0b1120")); main.pack(side="left", fill="both", expand=True)
         top = ctk.CTkFrame(main, fg_color="transparent"); top.pack(fill="x", padx=28, pady=(24, 12))
         self.title_label = ctk.CTkLabel(top, text="Product Sales Report", font=("Segoe UI", 25, "bold")); self.title_label.pack(side="left")
-        self.export_btn = ctk.CTkButton(top, text="Export PDF", width=120, fg_color="#334155", command=self.export_pdf); self.export_btn.pack(side="right")
+        self.export_btn = ctk.CTkButton(top, text="⇩  Export PDF", width=130, corner_radius=CONTROL_RADIUS, fg_color="transparent", border_width=1, border_color=BORDER, text_color=("#172033", "#f1f5f9"), hover_color=ACCENT_SOFT, command=self.export_pdf); self.export_btn.pack(side="right")
 
-        filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=14); filters.pack(fill="x", padx=28, pady=8)
+        filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=CARD_RADIUS, border_width=1, border_color=BORDER); filters.pack(fill="x", padx=28, pady=8)
         now = datetime.now().replace(second=0, microsecond=0); midnight = now.replace(hour=0, minute=0)
         self.start_field = DateTimeField(filters, "Start date & time", midnight, self.live_date_filter_changed); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
         self.end_field = DateTimeField(filters, "End date & time", now, self.live_end_filter_changed); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
         box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
         ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd")).pack(anchor="w")
-        self.search_placeholder = "Barcode, name, or reference"
+        self.search_placeholder = "⌕  Barcode, name, or reference"
         self.search_var = ctk.StringVar(value="")
         search_holder = ctk.CTkFrame(box, height=28, fg_color="transparent")
         search_holder.pack(fill="x", anchor="w")
@@ -484,8 +513,8 @@ class ReportApp(ctk.CTk):
         self.reason_menu.set("All reasons")
         self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145)
         self.group_check.pack(side="left", padx=(2, 8))
-        self.run_btn = ctk.CTkButton(filter2, text="Run Report", width=145, height=38, command=self.run_report); self.run_btn.pack(side="right")
-        self.refresh_btn = ctk.CTkButton(filter2, text="↻", width=44, height=38, font=("Segoe UI", 22), fg_color=("#d8e2ef", "#334155"), text_color=("#172033", "#ffffff"), hover_color=("#c5d3e3", "#475569"), command=self.refresh_report)
+        self.run_btn = ctk.CTkButton(filter2, text="▶  Run Report", width=150, height=38, corner_radius=CONTROL_RADIUS, fg_color=ACCENT, command=self.run_report); self.run_btn.pack(side="right")
+        self.refresh_btn = ctk.CTkButton(filter2, text="↻", width=44, height=38, corner_radius=CONTROL_RADIUS, font=("Segoe UI", 22), fg_color=SURFACE_ELEV, border_width=1, border_color=BORDER, text_color=("#172033", "#f1f5f9"), hover_color=ACCENT_SOFT, command=self.refresh_report)
         self.refresh_btn.pack(side="right", padx=10)
         self.loading_holder = ctk.CTkFrame(main, height=5, fg_color="transparent")
         self.loading_holder.pack(fill="x", padx=28, pady=(0, 2))
@@ -496,7 +525,8 @@ class ReportApp(ctk.CTk):
         self.table_holder = ctk.CTkFrame(main, fg_color="transparent", corner_radius=0)
         self.table_holder.pack(fill="both", expand=True, padx=28, pady=(8, 12))
         table_frame = ctk.CTkFrame(self.table_holder, width=900, height=600,
-                                   fg_color=("#ffffff", "#111827"), corner_radius=14)
+                                   fg_color=("#ffffff", "#111827"), corner_radius=CARD_RADIUS,
+                                   border_width=1, border_color=BORDER)
         self.table_frame = table_frame
         # Keep the outer frame as the viewport. Without this, the Treeview's
         # requested column width makes the frame grow beyond the window and
@@ -509,7 +539,7 @@ class ReportApp(ctk.CTk):
         style.configure("Report.Treeview.Heading", background="#1f2937", foreground="#a9b8cc", borderwidth=0, relief="flat", font=("Segoe UI", 10, "bold"))
         style.map("Report.Treeview", background=[("selected", "#075985")])
         self.tree = ttk.Treeview(table_frame, style="Report.Treeview", show="headings")
-        self.tree.tag_configure("category_header", background="#1f6aa5", foreground="#ffffff", font=("Segoe UI", 12, "bold"))
+        self.tree.tag_configure("category_header", font=("Segoe UI", 12, "bold"))
         self.tree.tag_configure("category_total", background="#dbeafe", foreground="#12395b", font=("Segoe UI", 10, "bold"))
         # Purchase-cost increases are warnings (red); decreases are favorable (green).
         self.tree.tag_configure("price_up", background="#421b24", foreground="#fecdd3")
@@ -733,13 +763,13 @@ class ReportApp(ctk.CTk):
             self.configure_columns(schedule_resize=False)
             self.configure_payment_filter(kind)
             self.restore_report_filters(kind)
-            sales = kind == "sales"
             title = {"sales": "Product Sales Report", "purchases": "Purchased Products Report", "cash": "Close Cash Movement Report"}[kind]
             self.title_label.configure(text=title)
-            inactive_text = ("#172033", "#f1f5f9")
-            self.nav_sales.configure(fg_color="#1f6aa5" if sales else "transparent", text_color="#ffffff" if sales else inactive_text)
-            self.nav_purchases.configure(fg_color="#1f6aa5" if kind == "purchases" else "transparent", text_color="#ffffff" if kind == "purchases" else inactive_text)
-            self.nav_cash.configure(fg_color="#1f6aa5" if kind == "cash" else "transparent", text_color="#ffffff" if kind == "cash" else inactive_text)
+            for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases), ("cash", self.nav_cash)):
+                active = nav_key == kind
+                nav_button.configure(fg_color=ACCENT_SOFT if active else "transparent",
+                                     text_color=ACCENT_TEXT if active else TEXT_MUTED)
+                self.nav_indicators[nav_key].configure(fg_color=ACCENT if active else "transparent")
             if kind == "cash":
                 self.start_field.grid_remove(); self.end_field.grid_remove()
                 self.cash_filters.grid(row=0, column=0, columnspan=2, padx=18, pady=14, sticky="w")
@@ -937,6 +967,8 @@ class ReportApp(ctk.CTk):
         self.tree.tag_configure("category_total", background="#17324d" if dark else "#dbeafe",
                                 foreground="#7dd3fc" if dark else "#12395b",
                                 font=("Segoe UI", 10, "bold"))
+        self.tree.tag_configure("category_header", background=ACCENT_SOFT[1] if dark else ACCENT_SOFT[0],
+                                foreground=ACCENT_TEXT[1] if dark else ACCENT_TEXT[0])
 
     def load_cash_sequences(self):
         if not self.config_data.get("database"): return
@@ -1025,7 +1057,7 @@ class ReportApp(ctk.CTk):
         all_totals = base_totals + self.payment_totals_data()
         for index, (label, value) in enumerate(all_totals):
             is_payment = index >= len(base_totals)
-            card = ctk.CTkFrame(self.totals_frame, fg_color=(("#dcfce7" if is_payment else "#e5edf6"), ("#12372a" if is_payment else "#172033")), corner_radius=9)
+            card = ctk.CTkFrame(self.totals_frame, fg_color=(("#dcfce7" if is_payment else "#e5edf6"), ("#12372a" if is_payment else "#172033")), corner_radius=CONTROL_RADIUS, border_width=1, border_color=BORDER)
             card.pack(side="left", padx=4)
             ctk.CTkLabel(card, text=label.upper(), font=("Segoe UI", 9, "bold"), text_color=(("#15803d" if is_payment else "#64748b"), ("#86efac" if is_payment else "#8fa3bd"))).pack(anchor="w", padx=12, pady=(6, 0))
             money_labels = {"Buy Price", "Sell Price", "Sales", "Total Buy Price", "Total Sold", "Total Bought"}
