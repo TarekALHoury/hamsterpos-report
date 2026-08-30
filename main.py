@@ -68,6 +68,17 @@ TEXT_MUTED = ("#64748b", "#8b98ad")
 CONTROL_RADIUS = 10
 CARD_RADIUS = 14
 
+# Semantic status-banner styling: icon, text, background, border — each a
+# (light, dark) tuple except icon. Maps the small fixed set of severities
+# every status message already falls into.
+STATUS_KINDS = {
+    "neutral": {"icon": "●", "text": TEXT_MUTED, "bg": SURFACE_ELEV, "border": BORDER},
+    "info": {"icon": "●", "text": ("#1d4ed8", "#93c5fd"), "bg": ("#e8f0fe", "#132a4d"), "border": ("#bfdbfe", "#1e3a5f")},
+    "success": {"icon": "✓", "text": ("#166534", "#7fe3bd"), "bg": ("#dcfce7", "#12372a"), "border": ("#86efac", "#1f5c40")},
+    "warning": {"icon": "!", "text": ("#92400e", "#fbbf24"), "bg": ("#fef3c7", "#3a2d0c"), "border": ("#fcd34d", "#5c4a12")},
+    "error": {"icon": "✕", "text": ("#9f1239", "#ffb0bb"), "bg": ("#ffe4e6", "#3a1420"), "border": ("#fda4af", "#5c1f2e")},
+}
+
 
 def resource_path(relative_path: str) -> Path:
     """Resolve bundled PyInstaller assets and source-run assets."""
@@ -256,13 +267,13 @@ class DateTimeField(ctk.CTkFrame):
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack()
         self.date_var = ctk.StringVar(value=self.value_date.strftime("%m-%d-%y"))
-        self.date_entry = ctk.CTkEntry(row, textvariable=self.date_var, width=100)
+        self.date_entry = ctk.CTkEntry(row, textvariable=self.date_var, width=100, corner_radius=CONTROL_RADIUS)
         self.date_entry.pack(side="left", padx=(0, 4))
-        self.calendar_button = ctk.CTkButton(row, text="▦", width=36, command=self.open_picker)
+        self.calendar_button = ctk.CTkButton(row, text="▦", width=36, corner_radius=CONTROL_RADIUS, command=self.open_picker)
         self.calendar_button.pack(side="left", padx=(0, 6))
-        self.hour = ctk.CTkEntry(row, width=38); self.hour.insert(0, f"{initial.hour:02d}"); self.hour.pack(side="left")
+        self.hour = ctk.CTkEntry(row, width=38, corner_radius=CONTROL_RADIUS); self.hour.insert(0, f"{initial.hour:02d}"); self.hour.pack(side="left")
         ctk.CTkLabel(row, text=":").pack(side="left")
-        self.minute = ctk.CTkEntry(row, width=38); self.minute.insert(0, f"{initial.minute:02d}"); self.minute.pack(side="left")
+        self.minute = ctk.CTkEntry(row, width=38, corner_radius=CONTROL_RADIUS); self.minute.insert(0, f"{initial.minute:02d}"); self.minute.pack(side="left")
         for entry in (self.date_entry, self.hour, self.minute):
             entry.bind("<KeyPress>", self.user_changed)
             entry.bind("<<Paste>>", self.user_changed)
@@ -486,6 +497,74 @@ class ReportApp(ctk.CTk):
             self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
 
+    def setup_background_services(self):
+        icon_path = resource_path("assets/app_icon.ico")
+        self.notification_service = NotificationService(APP_NAME, icon_path)
+        self.notification_history = NotificationHistory(APP_DIR / "notifications.sqlite3")
+        self.subscription_monitor = SubscriptionMonitor(
+            config_provider=lambda: self.config_data,
+            connection_factory=db_connect,
+            notifier=self.notification_service,
+            history=self.notification_history,
+            on_complete=lambda result: self.background_events.put(("subscription_check_complete", result)),
+        )
+        self.subscription_monitor.start()
+        self.tray_service = None
+        try:
+            self.tray_service = TrayService(
+                icon_path=icon_path, app_name=APP_NAME,
+                open_app=lambda: self.background_events.put(("show_window", None)),
+                check_now=self.subscription_monitor.request_check,
+                open_settings=lambda: self.background_events.put(("open_settings", None)),
+                exit_app=lambda: self.background_events.put(("exit", None)),
+            )
+            self.tray_service.start()
+        except Exception:
+            # A tray icon is a nice-to-have; the app must still run without one
+            # (e.g. no icon file, or pystray unsupported on this system).
+            self.tray_service = None
+        self.after(200, self.poll_background_events)
+
+    def poll_background_events(self):
+        try:
+            while True:
+                action, _payload = self.background_events.get_nowait()
+                if action == "show_window":
+                    self.show_from_tray()
+                elif action == "open_settings":
+                    self.show_from_tray()
+                    self.open_settings()
+                elif action == "exit":
+                    self.exit_application()
+                    return
+                # "subscription_check_complete" needs no UI action here — a
+                # matching subscription already gets its own toast from
+                # SubscriptionMonitor via self.notification_service.
+        except queue.Empty:
+            pass
+        self.after(200, self.poll_background_events)
+
+    def show_from_tray(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def hide_to_tray(self):
+        # The window close button hides to the tray instead of quitting —
+        # "Exit" in the tray menu (-> exit_application) is the real quit path.
+        self.withdraw()
+
+    def exit_application(self):
+        if self.exiting:
+            return
+        self.exiting = True
+        if getattr(self, "subscription_monitor", None):
+            self.subscription_monitor.stop()
+        if getattr(self, "tray_service", None):
+            try: self.tray_service.stop()
+            except Exception: pass
+        self.destroy()
+
     def build_nav_item(self, parent, key, icon, label, command):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=4)
@@ -497,6 +576,22 @@ class ReportApp(ctk.CTk):
         button.pack(side="left", fill="both", expand=True, padx=(6, 0))
         self.nav_indicators[key] = indicator
         return button
+
+    def build_status_banner(self, parent):
+        banner = ctk.CTkFrame(parent, corner_radius=CONTROL_RADIUS, border_width=1)
+        banner.pack(anchor="w")
+        icon = ctk.CTkLabel(banner, text="", width=16, font=("Segoe UI", 12, "bold"))
+        icon.pack(side="left", padx=(10, 0), pady=6)
+        text = ctk.CTkLabel(banner, text="")
+        text.pack(side="left", padx=(6, 12), pady=6)
+        self.status_icon, self.status_text = icon, text
+        return banner
+
+    def set_status(self, text, kind="neutral"):
+        style = STATUS_KINDS[kind]
+        self.status_icon.configure(text=style["icon"], text_color=style["text"])
+        self.status_text.configure(text=text, text_color=style["text"])
+        self.status.configure(fg_color=style["bg"], border_color=style["border"])
 
     def build_ui(self):
         sidebar = ctk.CTkFrame(self, width=232, corner_radius=0, fg_color=("#edf2f7", "#101827")); sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
@@ -535,7 +630,7 @@ class ReportApp(ctk.CTk):
         search_holder = ctk.CTkFrame(box, height=28, fg_color="transparent")
         search_holder.pack(fill="x", anchor="w")
         search_holder.pack_propagate(False)
-        self.search_entry = ctk.CTkEntry(search_holder, textvariable=self.search_var)
+        self.search_entry = ctk.CTkEntry(search_holder, textvariable=self.search_var, corner_radius=CONTROL_RADIUS)
         self.search_entry.pack(fill="both", expand=True)
         self.search_has_focus = False
         self.search_hint = ctk.CTkLabel(
@@ -553,27 +648,27 @@ class ReportApp(ctk.CTk):
         self.cash_filters = ctk.CTkFrame(filters, fg_color="transparent")
         ctk.CTkLabel(self.cash_filters, text="Close cash sequence", text_color=("#475569", "#9aa9bd")).grid(row=0, column=0, sticky="w", padx=(0, 12))
         ctk.CTkLabel(self.cash_filters, text="Movement", text_color=("#475569", "#9aa9bd")).grid(row=0, column=1, sticky="w")
-        self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410, command=self.live_filter_changed)
+        self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.cash_menu.grid(row=1, column=0, padx=(0, 12))
-        self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140, command=self.live_filter_changed)
+        self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.movement_menu.set("All"); self.movement_menu.grid(row=1, column=1)
 
         filter2 = ctk.CTkFrame(main, fg_color="transparent"); filter2.pack(fill="x", padx=28, pady=7)
-        self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170, command=self.live_filter_changed); self.category_menu.pack(side="left", padx=(0, 8))
-        self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165, command=self.live_filter_changed); self.sort_menu.pack(side="left")
-        self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165, command=self.live_filter_changed)
+        self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed); self.category_menu.pack(side="left", padx=(0, 8))
+        self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed); self.sort_menu.pack(side="left")
+        self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
-        self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, command=self.live_filter_changed)
+        self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.reason_menu.set("All reasons")
         self.subscription_status_menu = ctk.CTkOptionMenu(
             filter2, values=["All statuses", "Active", "Inactive", "Ending soon"],
-            width=150, command=self.live_filter_changed)
+            width=150, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.subscription_status_menu.set("All statuses")
         self.subscription_days_menu = ctk.CTkOptionMenu(
             filter2, values=["Days: default", "Days: lowest first", "Days: highest first"],
-            width=175, command=self.live_filter_changed)
+            width=175, corner_radius=CONTROL_RADIUS, command=self.live_filter_changed)
         self.subscription_days_menu.set("Days: default")
-        self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145)
+        self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145, corner_radius=4)
         self.group_check.pack(side="left", padx=(2, 8))
         self.run_btn = ctk.CTkButton(filter2, text="▶  Run Report", width=150, height=38, corner_radius=CONTROL_RADIUS, fg_color=ACCENT, command=self.run_report); self.run_btn.pack(side="right")
         self.refresh_btn = ctk.CTkButton(filter2, text="↻", width=44, height=38, corner_radius=CONTROL_RADIUS, font=("Segoe UI", 22), fg_color=SURFACE_ELEV, border_width=1, border_color=BORDER, text_color=("#172033", "#f1f5f9"), hover_color=ACCENT_SOFT, command=self.refresh_report)
@@ -633,7 +728,8 @@ class ReportApp(ctk.CTk):
         footer = ctk.CTkFrame(main, height=94, fg_color="transparent")
         footer.pack(fill="x", padx=32, pady=(0, 12))
         footer.pack_propagate(False)
-        self.status = ctk.CTkLabel(footer, text="Ready", text_color=("#52647c", "#8292aa")); self.status.pack(anchor="w")
+        self.status = self.build_status_banner(footer)
+        self.set_status("Ready", "neutral")
         self.totals_frame = ctk.CTkFrame(footer, fg_color="transparent"); self.totals_frame.pack(fill="x", pady=(4, 0))
         self.total_cards = []
         self.configure_columns()
@@ -849,7 +945,7 @@ class ReportApp(ctk.CTk):
             empty_loaded = self.report_has_run.get(kind) and not self.rows
             status_text = (f"{len(self.rows):,} cached rows" if self.rows
                            else "No results found" if empty_loaded else "Ready")
-            self.status.configure(text=status_text, text_color="#3ecf8e" if self.rows else "#8292aa")
+            self.set_status(status_text, "success" if self.rows else "neutral")
             self.update_totals()
             self.update_idletasks()
         finally:
@@ -930,7 +1026,7 @@ class ReportApp(ctk.CTk):
             self.query_parameters()
         except Exception:
             # Date/time fields may be temporarily incomplete while typing.
-            self.status.configure(text="Finish entering a valid filter value", text_color="#f0aa5b")
+            self.set_status("Finish entering a valid filter value", "warning")
             return
         self.run_report()
 
@@ -1074,7 +1170,7 @@ class ReportApp(ctk.CTk):
             self.cash_menu.configure(values=values)
             self.cash_menu.set(selected if selected in self.cash_sequences else values[0])
         except Exception as exc:
-            self.status.configure(text=f"Could not load close cash sequences: {exc}", text_color="#ff7b7b")
+            self.set_status(f"Could not load close cash sequences: {exc}", "error")
 
     @staticmethod
     def number(row, key):
@@ -1205,9 +1301,9 @@ class ReportApp(ctk.CTk):
                 with conn.cursor() as cur: cur.execute("SELECT id, name FROM categories ORDER BY name"); rows = cur.fetchall()
             self.categories = {"All categories": None} | {row["name"]: row["id"] for row in rows}
             self.category_menu.configure(values=list(self.categories)); self.category_menu.set("All categories")
-            self.status.configure(text="Database connected")
+            self.set_status("Database connected", "success")
             self.load_cash_sequences()
-        except Exception as exc: self.status.configure(text=f"Database unavailable: {exc}", text_color="#ff7b7b")
+        except Exception as exc: self.set_status(f"Database unavailable: {exc}", "error")
 
     def query_parameters(self):
         search = self.get_search_text()
@@ -1255,7 +1351,7 @@ class ReportApp(ctk.CTk):
         self.query_generation += 1
         query_generation = self.query_generation
         self.run_btn.configure(state="disabled", text="Run Report"); self.refresh_btn.configure(state="disabled")
-        self.status.configure(text="Refreshing all data…" if refreshing else "Loading report…", text_color="#3b82f6")
+        self.set_status("Refreshing all data…" if refreshing else "Loading report…", "info")
         self.load_started = time.monotonic()
         self.loading_bar.pack(fill="x", pady=1)
         self.loading_bar.start()
@@ -1330,7 +1426,7 @@ class ReportApp(ctk.CTk):
             return
         self.stop_loading()
         self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
-        self.status.configure(text=f"Report failed: {exc}", text_color="#ff7b7b")
+        self.set_status(f"Report failed: {exc}", "error")
         messagebox.showerror(APP_NAME, str(exc))
 
     def format_money(self, value):
@@ -1599,10 +1695,9 @@ class ReportApp(ctk.CTk):
         self.run_btn.configure(state="normal", text="Run Report"); self.refresh_btn.configure(state="normal")
         action = "refreshed" if refreshed else "loaded"
         if self.rows:
-            self.status.configure(text=f"{len(self.rows):,} rows {action} · {datetime.now():%H:%M:%S}", text_color="#3ecf8e")
+            self.set_status(f"{len(self.rows):,} rows {action} · {datetime.now():%H:%M:%S}", "success")
         else:
-            self.status.configure(text=f"No results found · {datetime.now():%H:%M:%S}",
-                                  text_color=("#64748b", "#94a3b8"))
+            self.set_status(f"No results found · {datetime.now():%H:%M:%S}", "neutral")
         self.update_totals()
 
     def export_pdf(self):
@@ -1771,7 +1866,7 @@ class ReportApp(ctk.CTk):
             payment_totals = self.pdf_payment_totals()
             if payment_totals is not None:
                 story.extend([Spacer(1, 3*mm), Paragraph("Payment Method Totals", styles["Heading3"]), payment_totals])
-            doc.build(story); self.status.configure(text=f"Saved PDF: {target}", text_color="#3ecf8e")
+            doc.build(story); self.set_status(f"Saved PDF: {target}", "success")
             messagebox.showinfo(APP_NAME, f"PDF saved to:\n{target}")
         except Exception as exc: messagebox.showerror(APP_NAME, f"Could not create PDF:\n{exc}")
 
