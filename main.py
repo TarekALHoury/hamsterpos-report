@@ -4,12 +4,13 @@ import calendar
 import ctypes
 import json
 import os
+import queue
 import re
 import sys
 import threading
 import time
 from ctypes import wintypes
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import font as tkfont, messagebox, ttk
 from typing import Any
@@ -30,12 +31,18 @@ from xml.sax.saxutils import escape
 
 from report_sql import (CLOSE_CASH_COLUMNS, CLOSE_CASH_SQL, PURCHASES_SQL,
                         PURCHASE_COLUMNS, SALES_SQL, SALES_COLUMNS)
+from services.notification_service import NotificationService
+from services.startup_service import is_frozen_executable, set_start_with_windows
+from services.subscription_monitor import SubscriptionMonitor
+from services.tray_service import TrayService
+from storage.notification_history import NotificationHistory
+from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "5.9"
+APP_VERSION = "6.7"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
-MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price",
+MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
                  "total_sell_price", "total_sold", "total_bought"}
 PURCHASE_REASONS = {
     "All reasons": None,
@@ -112,7 +119,13 @@ def unprotect(value: str) -> str:
 
 
 def load_config() -> dict[str, Any]:
-    defaults = {"host": "localhost", "port": 3306, "database": "", "username": "", "password": "", "purchase_reason": "1", "currency": "$", "appearance": "Dark"}
+    defaults = {
+        "host": "localhost", "port": 3306, "database": "", "username": "",
+        "password": "", "purchase_reason": "1", "currency": "$",
+        "appearance": "Dark", "subscription_notifications_enabled": True,
+        "start_with_windows": False, "subscription_notify_days": 2,
+        "subscription_check_minutes": 60,
+    }
     if not CONFIG_FILE.exists():
         return defaults
     try:
@@ -301,8 +314,8 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent, config, on_saved):
         super().__init__(parent)
         self.config_data, self.on_saved = config, on_saved
-        self.title("Database settings")
-        self.geometry("520x650")
+        self.title("Settings")
+        self.geometry("540x790")
         self.resizable(False, False)
         self.transient(parent); self.grab_set()
         ctk.CTkLabel(self, text="Database connection", font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=30, pady=(28, 4))
@@ -329,6 +342,29 @@ class SettingsDialog(ctk.CTkToplevel):
                 entry = ctk.CTkEntry(form, show="•" if key == "password" else "")
                 entry.insert(0, str(config.get(key, ""))); entry.pack(fill="x", padx=12)
             self.entries[key] = entry
+        ctk.CTkLabel(form, text="Subscription notifications",
+                     font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=12, pady=(24, 8))
+        self.notification_enabled_var = ctk.BooleanVar(
+            value=bool(config.get("subscription_notifications_enabled", True)))
+        self.start_with_windows_var = ctk.BooleanVar(
+            value=bool(config.get("start_with_windows", False)))
+        ctk.CTkCheckBox(
+            form, text="Enable subscription expiry notifications",
+            variable=self.notification_enabled_var,
+        ).pack(anchor="w", padx=12, pady=5)
+        ctk.CTkCheckBox(
+            form, text="Start with Windows (silent in system tray)",
+            variable=self.start_with_windows_var,
+        ).pack(anchor="w", padx=12, pady=5)
+        for key, label, default in (
+            ("subscription_notify_days", "Notify before (days)", 2),
+            ("subscription_check_minutes", "Check every (minutes)", 60),
+        ):
+            ctk.CTkLabel(form, text=label).pack(anchor="w", padx=12, pady=(10, 3))
+            entry = ctk.CTkEntry(form)
+            entry.insert(0, str(config.get(key, default)))
+            entry.pack(fill="x", padx=12)
+            self.entries[key] = entry
         self.status = ctk.CTkLabel(self, text="", text_color="#f0aa5b", height=24); self.status.pack(pady=(6, 0))
         buttons = ctk.CTkFrame(self, fg_color="transparent"); buttons.pack(fill="x", padx=30, pady=(4, 18))
         ctk.CTkButton(buttons, text="Test connection", fg_color="#334155", command=self.test).pack(side="left")
@@ -339,6 +375,14 @@ class SettingsDialog(ctk.CTkToplevel):
     def values(self):
         values = {key: entry.get().strip() for key, entry in self.entries.items()}
         values["port"] = int(values["port"])
+        values["subscription_notify_days"] = int(values["subscription_notify_days"])
+        values["subscription_check_minutes"] = int(values["subscription_check_minutes"])
+        if values["subscription_notify_days"] < 0:
+            raise ValueError("Notify-before days cannot be negative.")
+        if values["subscription_check_minutes"] < 1:
+            raise ValueError("Check interval must be at least 1 minute.")
+        values["subscription_notifications_enabled"] = self.notification_enabled_var.get()
+        values["start_with_windows"] = self.start_with_windows_var.get()
         return values
 
     def test(self):
@@ -396,15 +440,22 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def save(self):
         try:
-            values = self.values(); save_config(values)
+            values = self.values()
+            set_start_with_windows(values["start_with_windows"])
+            save_config(values)
             self.config_data.clear(); self.config_data.update(values)
             self.on_saved(); self.destroy()
         except Exception as exc: messagebox.showerror(APP_NAME, str(exc), parent=self)
 
 
 class ReportApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, start_hidden=False):
         super().__init__()
+        self.start_hidden = start_hidden
+        self.exiting = False
+        self.background_events = queue.Queue()
+        if start_hidden:
+            self.withdraw()
         self.config_data = load_config()
         ctk.set_appearance_mode(self.config_data.get("appearance", "Dark")); ctk.set_default_color_theme("blue")
         self.title(f"{APP_NAME} — v{APP_VERSION}")
@@ -412,8 +463,8 @@ class ReportApp(ctk.CTk):
         except Exception: pass
         self.geometry("1380x820"); self.minsize(1050, 680)
         self.rows = []; self.categories = {"All categories": None}; self.cash_sequences = {}
-        self.report_rows_cache = {"sales": [], "purchases": [], "cash": []}
-        self.report_has_run = {"sales": False, "purchases": False, "cash": False}
+        self.report_rows_cache = {"sales": [], "purchases": [], "cash": [], "subscriptions": []}
+        self.report_has_run = {"sales": False, "purchases": False, "cash": False, "subscriptions": False}
         self.render_generation = 0
         self.active_calendar = None
         self.report_filter_states = {}
@@ -424,12 +475,15 @@ class ReportApp(ctk.CTk):
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.setup_background_services()
         self._theme_sync_job = None
         self._style_table(ctk.get_appearance_mode() == "Dark")
         if self.config_data.get("appearance") == "System":
             self._theme_sync_job = self.after(100, self.sync_system_table_theme)
         self.after(1000, self.update_live_end_time)
-        if not self.config_data.get("database"): self.after(250, lambda: self.open_settings())
+        if not self.config_data.get("database") and not start_hidden:
+            self.after(250, lambda: self.open_settings())
         else: self.after(150, self.load_categories)
 
     def build_nav_item(self, parent, key, icon, label, command):
@@ -511,6 +565,14 @@ class ReportApp(ctk.CTk):
         self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
         self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, command=self.live_filter_changed)
         self.reason_menu.set("All reasons")
+        self.subscription_status_menu = ctk.CTkOptionMenu(
+            filter2, values=["All statuses", "Active", "Inactive", "Ending soon"],
+            width=150, command=self.live_filter_changed)
+        self.subscription_status_menu.set("All statuses")
+        self.subscription_days_menu = ctk.CTkOptionMenu(
+            filter2, values=["Days: default", "Days: lowest first", "Days: highest first"],
+            width=175, command=self.live_filter_changed)
+        self.subscription_days_menu.set("Days: default")
         self.group_check = ctk.CTkCheckBox(filter2, text="Group by category", variable=self.group_categories, command=self.toggle_category_grouping, width=145)
         self.group_check.pack(side="left", padx=(2, 8))
         self.run_btn = ctk.CTkButton(filter2, text="▶  Run Report", width=150, height=38, corner_radius=CONTROL_RADIUS, fg_color=ACCENT, command=self.run_report); self.run_btn.pack(side="right")
@@ -546,6 +608,8 @@ class ReportApp(ctk.CTk):
         self.tree.tag_configure("price_down", background="#12372a", foreground="#bbf7d0")
         self.tree.tag_configure("sale_discount", background="#421b24", foreground="#fecdd3")
         self.tree.tag_configure("sale_price_change", background="#12372a", foreground="#bbf7d0")
+        self.tree.tag_configure("subscription_ending", background="#4a3b0c", foreground="#fde68a")
+        self.tree.tag_configure("subscription_expired", background="#421b24", foreground="#fecdd3")
         vs = ctk.CTkScrollbar(table_frame, command=self.tree.yview)
         hs = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
         self.horizontal_scrollbar = hs
@@ -566,7 +630,9 @@ class ReportApp(ctk.CTk):
         self.tree.bind("<Shift-MouseWheel>", self.scroll_table_horizontally, add="+")
         hs.bind("<MouseWheel>", self.scroll_table_horizontally, add="+")
         table_frame.grid_rowconfigure(0, weight=1); table_frame.grid_columnconfigure(0, weight=1)
-        footer = ctk.CTkFrame(main, fg_color="transparent"); footer.pack(fill="x", padx=32, pady=(0, 12))
+        footer = ctk.CTkFrame(main, height=94, fg_color="transparent")
+        footer.pack(fill="x", padx=32, pady=(0, 12))
+        footer.pack_propagate(False)
         self.status = ctk.CTkLabel(footer, text="Ready", text_color=("#52647c", "#8292aa")); self.status.pack(anchor="w")
         self.totals_frame = ctk.CTkFrame(footer, fg_color="transparent"); self.totals_frame.pack(fill="x", pady=(4, 0))
         self.total_cards = []
@@ -589,7 +655,9 @@ class ReportApp(ctk.CTk):
 
     @property
     def columns(self):
-        return SALES_COLUMNS if self.report_type.get() == "sales" else (PURCHASE_COLUMNS if self.report_type.get() == "purchases" else CLOSE_CASH_COLUMNS)
+        return {"sales": SALES_COLUMNS, "purchases": PURCHASE_COLUMNS,
+                "cash": CLOSE_CASH_COLUMNS,
+                "subscriptions": SUBSCRIPTION_REPORT_COLUMNS}[self.report_type.get()]
 
     def configure_columns(self, schedule_resize=True):
         self.render_generation += 1
@@ -600,7 +668,7 @@ class ReportApp(ctk.CTk):
         for key, title, width in self.columns:
             # All report values sit directly beneath the center of their
             # heading. Product names remain left aligned for natural reading.
-            align = "w" if key == "item_name" else "center"
+            align = "w" if key in {"item_name", "customer_name"} else "center"
             self.tree.heading(key, text=title, anchor=align)
             # Every heading receives exactly the same trailing breathing room.
             # This prevents long labels from touching the next column while
@@ -761,7 +829,6 @@ class ReportApp(ctk.CTk):
         try:
             self.report_type.set(kind); self.rows = self.report_rows_cache[kind]
             self.configure_columns(schedule_resize=False)
-            self.configure_payment_filter(kind)
             self.restore_report_filters(kind)
             title = {"sales": "Product Sales Report", "purchases": "Purchased Products Report", "cash": "Close Cash Movement Report"}[kind]
             self.title_label.configure(text=title)
@@ -803,6 +870,8 @@ class ReportApp(ctk.CTk):
             "payment": self.payment_menu.get(), "search": self.get_search_text(),
             "reason": self.reason_menu.get(),
             "group": self.group_categories.get(), "movement": self.movement_menu.get(),
+            "subscription_status": self.subscription_status_menu.get(),
+            "subscription_days": self.subscription_days_menu.get(),
             "cash": self.cash_menu.get(),
             "start_date": self.start_field.date_var.get(), "start_hour": self.start_field.hour.get(),
             "start_minute": self.start_field.minute.get(), "end_date": self.end_field.date_var.get(),
@@ -881,17 +950,28 @@ class ReportApp(ctk.CTk):
             self.sort_menu.set("Date: newest first")
             self.payment_menu.set("All payment methods")
             self.reason_menu.set("All reasons")
+            self.subscription_status_menu.set("All statuses")
+            self.subscription_days_menu.set("Days: default")
             self.set_search_entry("")
             self.group_categories.set(False)
             self.movement_menu.set("All")
-            self.end_time_live = True
-            self.end_field.set_datetime(datetime.now().replace(second=0, microsecond=0))
+            if kind == "subscriptions":
+                now = datetime.now().replace(second=0, microsecond=0)
+                self.start_field.set_datetime(now.replace(hour=0, minute=0))
+                self.end_field.set_datetime(
+                    (now + timedelta(days=365)).replace(hour=23, minute=59))
+                self.end_time_live = False
+            else:
+                self.end_time_live = True
+                self.end_field.set_datetime(datetime.now().replace(second=0, microsecond=0))
             return
         self.category_menu.set(state["category"] if state["category"] in self.categories else "All categories")
         self.sort_menu.set(state["sort"])
         payment_values = list(self.payment_menu.cget("values"))
         self.payment_menu.set(state["payment"] if state["payment"] in payment_values else "All payment methods")
         self.reason_menu.set(state.get("reason", "All reasons") if state.get("reason", "All reasons") in PURCHASE_REASONS else "All reasons")
+        self.subscription_status_menu.set(state.get("subscription_status", "All statuses"))
+        self.subscription_days_menu.set(state.get("subscription_days", "Days: default"))
         self.set_search_entry(state["search"])
         self.group_categories.set(state["group"]); self.movement_menu.set(state["movement"])
         self.cash_menu.set(state["cash"])
@@ -922,6 +1002,7 @@ class ReportApp(ctk.CTk):
                 row.pop("__display_values", None)
         self.render_current_rows()
         self.load_categories()
+        self.subscription_monitor.request_check()
 
     def change_theme(self, mode):
         if self._theme_sync_job is not None:
@@ -964,6 +1045,12 @@ class ReportApp(ctk.CTk):
                                 foreground="#fecdd3" if dark else "#9f1239")
         self.tree.tag_configure("sale_price_change", background="#12372a" if dark else "#dcfce7",
                                 foreground="#bbf7d0" if dark else "#166534")
+        self.tree.tag_configure("subscription_ending",
+                                background="#4a3b0c" if dark else "#fef3c7",
+                                foreground="#fde68a" if dark else "#92400e")
+        self.tree.tag_configure("subscription_expired",
+                                background="#421b24" if dark else "#fee2e2",
+                                foreground="#fecdd3" if dark else "#991b1b")
         self.tree.tag_configure("category_total", background="#17324d" if dark else "#dbeafe",
                                 foreground="#7dd3fc" if dark else "#12395b",
                                 font=("Segoe UI", 10, "bold"))
@@ -996,6 +1083,9 @@ class ReportApp(ctk.CTk):
 
     def totals_data(self, rows=None):
         rows = self.rows if rows is None else rows
+        if self.report_type.get() == "subscriptions":
+            return [("Subscriptions", len(rows)),
+                    ("Total Amount", sum(self.number(r, "amount") for r in rows))]
         if self.report_type.get() == "sales":
             sell = sum(self.number(r, "sell_price") for r in rows)
             qty = sum(self.number(r, "qty_sold") for r in rows)
@@ -1030,6 +1120,8 @@ class ReportApp(ctk.CTk):
                 self.format_money(totals["Total Sold"]), self.format_money(totals["Total Bought"])]
 
     def payment_totals_data(self):
+        if self.report_type.get() == "subscriptions":
+            return []
         totals = {}
         amount_key = {"sales": "sales", "purchases": "total_buy_price"}.get(self.report_type.get())
         for row in self.rows:
@@ -1060,9 +1152,11 @@ class ReportApp(ctk.CTk):
             card = ctk.CTkFrame(self.totals_frame, fg_color=(("#dcfce7" if is_payment else "#e5edf6"), ("#12372a" if is_payment else "#172033")), corner_radius=CONTROL_RADIUS, border_width=1, border_color=BORDER)
             card.pack(side="left", padx=4)
             ctk.CTkLabel(card, text=label.upper(), font=("Segoe UI", 9, "bold"), text_color=(("#15803d" if is_payment else "#64748b"), ("#86efac" if is_payment else "#8fa3bd"))).pack(anchor="w", padx=12, pady=(6, 0))
-            money_labels = {"Buy Price", "Sell Price", "Sales", "Total Buy Price", "Total Sold", "Total Bought"}
+            money_labels = {"Buy Price", "Sell Price", "Sales", "Total Buy Price",
+                            "Total Sold", "Total Bought", "Total Amount"}
             value_text = (self.format_money(value) if is_payment or label in money_labels
-                          else f"{int(value):,}" if label == "Total Tickets" else f"{value:,.2f}")
+                          else f"{int(value):,}" if label in {"Total Tickets", "Subscriptions"}
+                          else f"{value:,.2f}")
             ctk.CTkLabel(card, text=value_text, font=("Segoe UI", 15, "bold"), text_color=(("#166534" if is_payment else "#0f4c81"), ("#bbf7d0" if is_payment else "#67c7ff"))).pack(anchor="w", padx=12, pady=(0, 6))
             self.total_cards.append(card)
 
@@ -1090,6 +1184,9 @@ class ReportApp(ctk.CTk):
 
     def pdf_total_row(self):
         totals = dict(self.totals_data())
+        if self.report_type.get() == "subscriptions":
+            return ["TOTAL", "", f"{int(totals['Subscriptions']):,} subscriptions",
+                    "", "", "", "", "", "", self.format_money(totals["Total Amount"])]
         if self.report_type.get() == "sales":
             return ["TOTAL", "", "", "", self.format_money(totals['Sell Price']),
                     "", f"{totals['QTY Sold']:,.2f}",
@@ -1116,7 +1213,10 @@ class ReportApp(ctk.CTk):
         search = self.get_search_text()
         reason = str(self.config_data.get("purchase_reason", "1")).strip()
         selected_payment = self.payment_menu.get()
-        common = {"category_id": self.categories.get(self.category_menu.get()), "category_name": None if self.category_menu.get() == "All categories" else self.category_menu.get(), "payment_method": "All" if selected_payment == "All payment methods" else selected_payment, "reason": PURCHASE_REASONS.get(self.reason_menu.get()), "search": search, "search_like": f"%{search}%", "purchase_reason": int(reason) if reason else None}
+        status = self.subscription_status_menu.get()
+        common = {"category_id": self.categories.get(self.category_menu.get()), "category_name": None if self.category_menu.get() == "All categories" else self.category_menu.get(), "payment_method": "All" if selected_payment == "All payment methods" else selected_payment, "reason": PURCHASE_REASONS.get(self.reason_menu.get()), "search": search, "search_like": f"%{search}%", "purchase_reason": int(reason) if reason else None,
+                  "subscription_status": "All" if status == "All statuses" else status.title(),
+                  "notify_days": int(self.config_data.get("subscription_notify_days", 2))}
         if self.report_type.get() == "cash":
             money = self.cash_sequences.get(self.cash_menu.get())
             if not money: raise ValueError("Select a close cash sequence")
@@ -1126,6 +1226,20 @@ class ReportApp(ctk.CTk):
         return common | {"start_at": start, "end_at": end}
 
     def order_clause(self):
+        if self.report_type.get() == "subscriptions":
+            days_order = self.subscription_days_menu.get()
+            if days_order == "Days: lowest first":
+                return "days_remaining ASC, customer_name ASC"
+            if days_order == "Days: highest first":
+                return "days_remaining DESC, customer_name ASC"
+            return {
+                "Expiry: soonest first": "expiry_date ASC, customer_name ASC",
+                "Expiry: latest first": "expiry_date DESC, customer_name ASC",
+                "Customer: A-Z": "customer_name ASC, expiry_date ASC",
+                "Customer: Z-A": "customer_name DESC, expiry_date ASC",
+                "Start: newest first": "start_date DESC, customer_name ASC",
+                "Start: oldest first": "start_date ASC, customer_name ASC",
+            }.get(self.sort_menu.get(), "expiry_date ASC, customer_name ASC")
         return {"Date: newest first": "1 DESC", "Date: oldest first": "1 ASC", "Category A–Z": "category ASC, 1 DESC", "Category Z–A": "category DESC, 1 DESC"}[self.sort_mode.get()]
 
     def run_report(self, refreshing=False):
@@ -1133,7 +1247,9 @@ class ReportApp(ctk.CTk):
         except Exception as exc: messagebox.showerror(APP_NAME, str(exc)); return
         self.hide_empty_state()
         kind = self.report_type.get()
-        template = {"sales": SALES_SQL, "purchases": PURCHASES_SQL, "cash": CLOSE_CASH_SQL}[kind]
+        template = {"sales": SALES_SQL, "purchases": PURCHASES_SQL,
+                    "cash": CLOSE_CASH_SQL,
+                    "subscriptions": SUBSCRIPTION_REPORT_SQL}[kind]
         query = template.format(order_clause=self.order_clause())
         column_keys = [column[0] for column in self.columns]
         self.query_generation += 1
@@ -1154,13 +1270,22 @@ class ReportApp(ctk.CTk):
             self.live_filter_job = None
         self.suspend_live_filters = True
         now = datetime.now().replace(second=0, microsecond=0)
-        self.end_time_live = True
-        self.start_field.set_datetime(now.replace(hour=0, minute=0))
-        self.end_field.set_datetime(now)
+        if self.report_type.get() == "subscriptions":
+            self.end_time_live = False
+            self.start_field.set_datetime(now.replace(hour=0, minute=0))
+            self.end_field.set_datetime(
+                (now + timedelta(days=365)).replace(hour=23, minute=59))
+        else:
+            self.end_time_live = True
+            self.start_field.set_datetime(now.replace(hour=0, minute=0))
+            self.end_field.set_datetime(now)
         self.category_menu.set("All categories")
-        self.sort_menu.set("Date: newest first")
+        self.sort_menu.set("Expiry: soonest first" if self.report_type.get() == "subscriptions"
+                           else "Date: newest first")
         self.payment_menu.set("All payment methods")
         self.reason_menu.set("All reasons")
+        self.subscription_status_menu.set("All statuses")
+        self.subscription_days_menu.set("Days: default")
         self.set_search_entry("")
         self.group_categories.set(False)
         self.movement_menu.set("All")
@@ -1215,6 +1340,7 @@ class ReportApp(ctk.CTk):
 
     def display(self, value, key=None):
         if isinstance(value, datetime): return value.strftime("%m-%d-%y %H:%M")
+        if isinstance(value, date): return value.strftime("%m-%d-%y")
         if key in MONEY_COLUMNS: return self.format_money(value)
         if isinstance(value, float): return f"{value:,.2f}"
         return "" if value is None else str(value)
@@ -1237,13 +1363,14 @@ class ReportApp(ctk.CTk):
         keys = [key for key, _, _ in self.columns]
         # Only a product name is allowed to expand a logical report row.
         # Every other column keeps the normal compact row height.
-        wrap_keys = {"item_name"}
+        wrap_keys = {"item_name", "product_name"}
         font = tkfont.Font(family="Segoe UI", size=10)
         # Grow text-heavy columns only when their actual content needs space.
         # Item Name retains a larger limit; Price Status expands enough for
         # discount/change details while blank and Regular values stay compact.
         widths_changed = False
-        for auto_key, maximum_width in (("item_name", 720), ("price_status", 460)):
+        for auto_key, maximum_width in (("item_name", 720), ("product_name", 720),
+                                        ("price_status", 460)):
             if auto_key not in keys:
                 continue
             value_index = keys.index(auto_key)
@@ -1324,6 +1451,10 @@ class ReportApp(ctk.CTk):
 
     @staticmethod
     def row_tags(row):
+        if row.get("expiry_status") == "Ending Soon":
+            return ("subscription_ending",)
+        if row.get("expiry_status") == "Expired":
+            return ("subscription_expired",)
         if row.get("__sale_status") == "discount":
             return ("sale_discount",)
         if row.get("__sale_status") == "changed":
@@ -1478,7 +1609,9 @@ class ReportApp(ctk.CTk):
         if not self.rows: messagebox.showinfo(APP_NAME, "Run a report before exporting."); return
         desktop = Path(os.getenv("USERPROFILE", Path.home())) / "Desktop"
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        label = {"sales": "product_sales", "purchases": "purchased_products", "cash": "close_cash_movement"}[self.report_type.get()]
+        label = {"sales": "product_sales", "purchases": "purchased_products",
+                 "cash": "close_cash_movement",
+                 "subscriptions": "subscription_expiry"}[self.report_type.get()]
         target = desktop / f"{label}_{stamp}.pdf"
         try:
             font_dir = Path(os.getenv("WINDIR", r"C:\Windows")) / "Fonts"
@@ -1551,7 +1684,8 @@ class ReportApp(ctk.CTk):
             category_total_set = set(category_total_rows)
             changed_directions = dict(changed_price_rows)
             sale_statuses = dict(sale_status_rows)
-            left_columns = {"item_name", "supplier_name", "payment_method", "price_status"}
+            left_columns = {"item_name", "customer_name", "supplier_name",
+                            "payment_method", "price_status"}
 
             arabic_pattern = re.compile(r"[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]")
             rtl_styles = {}
@@ -1643,4 +1777,11 @@ class ReportApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    ReportApp().mainloop()
+    app = ReportApp(start_hidden="--tray" in sys.argv[1:])
+    if "--toast-smoke-test" in sys.argv[1:]:
+        app.notification_service.show_status(
+            "HamsterPOS Reports", "Notification packaging test successful.")
+        app.after(1500, app.exit_application)
+    if "--smoke-test" in sys.argv[1:]:
+        app.after(2500, app.exit_application)
+    app.mainloop()
