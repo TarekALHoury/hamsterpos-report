@@ -601,7 +601,9 @@ class ReportApp(ctk.CTk):
         self.nav_sales = self.build_nav_item(sidebar, "sales", "▤", "Product Sales", lambda: self.switch_report("sales"))
         self.nav_purchases = self.build_nav_item(sidebar, "purchases", "▣", "Purchased Products", lambda: self.switch_report("purchases"))
         self.nav_cash = self.build_nav_item(sidebar, "cash", "◎", "Close Cash Movement", lambda: self.switch_report("cash"))
-        for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases), ("cash", self.nav_cash)):
+        self.nav_subscriptions = self.build_nav_item(sidebar, "subscriptions", "◷", "Subscription Expiry", lambda: self.switch_report("subscriptions"))
+        for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases),
+                                    ("cash", self.nav_cash), ("subscriptions", self.nav_subscriptions)):
             active = nav_key == self.report_type.get()
             nav_button.configure(fg_color=ACCENT_SOFT if active else "transparent",
                                  text_color=ACCENT_TEXT if active else TEXT_MUTED)
@@ -624,7 +626,8 @@ class ReportApp(ctk.CTk):
         self.start_field = DateTimeField(filters, "Start date & time", midnight, self.live_date_filter_changed); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
         self.end_field = DateTimeField(filters, "End date & time", now, self.live_end_filter_changed); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
         box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
-        ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd")).pack(anchor="w")
+        self.search_label = ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd"))
+        self.search_label.pack(anchor="w")
         self.search_placeholder = "⌕  Barcode, name, or reference"
         self.search_var = ctk.StringVar(value="")
         search_holder = ctk.CTkFrame(box, height=28, fg_color="transparent")
@@ -926,13 +929,46 @@ class ReportApp(ctk.CTk):
             self.report_type.set(kind); self.rows = self.report_rows_cache[kind]
             self.configure_columns(schedule_resize=False)
             self.restore_report_filters(kind)
-            title = {"sales": "Product Sales Report", "purchases": "Purchased Products Report", "cash": "Close Cash Movement Report"}[kind]
+            title = {"sales": "Product Sales Report", "purchases": "Purchased Products Report",
+                     "cash": "Close Cash Movement Report",
+                     "subscriptions": "Subscription Expiry Report"}[kind]
             self.title_label.configure(text=title)
-            for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases), ("cash", self.nav_cash)):
+            for nav_key, nav_button in (("sales", self.nav_sales), ("purchases", self.nav_purchases),
+                                        ("cash", self.nav_cash), ("subscriptions", self.nav_subscriptions)):
                 active = nav_key == kind
                 nav_button.configure(fg_color=ACCENT_SOFT if active else "transparent",
                                      text_color=ACCENT_TEXT if active else TEXT_MUTED)
                 self.nav_indicators[nav_key].configure(fg_color=ACCENT if active else "transparent")
+            subscription_report = kind == "subscriptions"
+            self.search_placeholder = ("⌕  Customer, phone, ticket, or subscription"
+                                       if subscription_report else "⌕  Barcode, name, or reference")
+            self.search_label.configure(text="Customer search" if subscription_report else "Product search")
+            self.search_hint.configure(text=self.search_placeholder)
+            self.subscription_status_menu.pack_forget()
+            self.subscription_days_menu.pack_forget()
+            if subscription_report:
+                self.category_menu.pack_forget()
+                self.reason_menu.pack_forget()
+                self.group_check.pack_forget()
+                self.sort_menu.configure(values=["Expiry: soonest first", "Expiry: latest first",
+                                                 "Customer: A-Z", "Customer: Z-A",
+                                                 "Start: newest first", "Start: oldest first"], width=145)
+                self.payment_menu.configure(width=145)
+                if self.sort_menu.get() not in self.sort_menu.cget("values"):
+                    self.sort_menu.set("Expiry: soonest first")
+                self.sort_menu.pack(side="left", padx=(0, 8))
+                self.payment_menu.pack(side="left", padx=(0, 8))
+                self.subscription_status_menu.pack(side="left", padx=(0, 8))
+                self.subscription_days_menu.pack(side="left")
+            else:
+                self.sort_menu.configure(values=["Date: newest first", "Date: oldest first",
+                                                 "Category A–Z", "Category Z–A"], width=165)
+                self.payment_menu.configure(width=165)
+                self.category_menu.pack(side="left", padx=(0, 8))
+                self.sort_menu.pack(side="left")
+                self.payment_menu.pack(side="left", padx=10)
+                self.group_check.pack(side="left", padx=(2, 8))
+                self.configure_payment_filter(kind)
             if kind == "cash":
                 self.start_field.grid_remove(); self.end_field.grid_remove()
                 self.cash_filters.grid(row=0, column=0, columnspan=2, padx=18, pady=14, sticky="w")
