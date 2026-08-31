@@ -269,6 +269,17 @@ FROM (
     LEFT JOIN categories c ON c.id = p.category
     WHERE cc.money = %(money)s
       AND sd.reason = 2 AND sd.units > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM receipts direct_refund_receipt
+          JOIN ticketlines direct_refund_line
+            ON direct_refund_line.ticket = direct_refund_receipt.id
+          WHERE direct_refund_receipt.money = cc.money
+            AND direct_refund_line.product = sd.product
+            AND direct_refund_line.units < 0
+            AND ABS(TIMESTAMPDIFF(
+                SECOND, direct_refund_receipt.datenew, sd.datenew)) <= 5
+      )
       AND %(movement_filter)s IN ('All', 'Sold')
 
     UNION ALL
