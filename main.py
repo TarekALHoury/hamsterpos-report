@@ -616,7 +616,15 @@ class ReportApp(ctk.CTk):
         self.category_menu = ctk.CTkOptionMenu(filter2, values=list(self.categories), width=170, command=self.live_filter_changed); self.category_menu.pack(side="left", padx=(0, 8))
         self.sort_menu = ctk.CTkOptionMenu(filter2, variable=self.sort_mode, values=["Date: newest first", "Date: oldest first", "Category A–Z", "Category Z–A"], width=165, command=self.live_filter_changed); self.sort_menu.pack(side="left")
         self.payment_menu = ctk.CTkOptionMenu(filter2, values=["All payment methods", "Cash", "Cheque", "Voucher", "Card", "Free", "Debt", "VIP Points", "Bank", "Slip", "Mobile", "Credit"], width=165, command=self.live_filter_changed)
-        self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=10)
+        self.payment_menu.set("All payment methods"); self.payment_menu.pack(side="left", padx=(4, 10))
+        self.sales_rank_menu = ctk.CTkOptionMenu(
+            filter2,
+            values=["Sales ranking: default", "Most sold by QTY", "Most repeated"],
+            width=175,
+            command=self.live_filter_changed,
+        )
+        self.sales_rank_menu.set("Sales ranking: default")
+        self.sales_rank_menu.pack(side="left", padx=(0, 10))
         self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, command=self.live_filter_changed)
         self.reason_menu.set("All reasons")
         self.subscription_status_menu = ctk.CTkOptionMenu(
@@ -900,6 +908,7 @@ class ReportApp(ctk.CTk):
             self.search_hint.configure(text=self.search_placeholder)
             self.subscription_status_menu.pack_forget()
             self.subscription_days_menu.pack_forget()
+            self.sales_rank_menu.pack_forget()
             if subscription_report:
                 self.category_menu.pack_forget()
                 self.reason_menu.pack_forget()
@@ -919,7 +928,9 @@ class ReportApp(ctk.CTk):
                                                  "Category A–Z", "Category Z–A"])
                 self.category_menu.pack(side="left", padx=(0, 8))
                 self.sort_menu.pack(side="left")
-                self.payment_menu.pack(side="left", padx=10)
+                self.payment_menu.pack(side="left", padx=(4, 10))
+                if sales:
+                    self.sales_rank_menu.pack(side="left", padx=(0, 10), before=self.group_check)
                 self.group_check.pack(side="left", padx=(2, 8))
                 self.configure_payment_filter(kind)
             if kind == "cash":
@@ -953,6 +964,7 @@ class ReportApp(ctk.CTk):
         self.report_filter_states[kind] = {
             "category": self.category_menu.get(), "sort": self.sort_menu.get(),
             "payment": self.payment_menu.get(), "search": self.get_search_text(),
+            "sales_rank": self.sales_rank_menu.get(),
             "reason": self.reason_menu.get(),
             "group": self.group_categories.get(), "movement": self.movement_menu.get(),
             "subscription_status": self.subscription_status_menu.get(),
@@ -1034,6 +1046,7 @@ class ReportApp(ctk.CTk):
             self.category_menu.set("All categories")
             self.sort_menu.set("Date: newest first")
             self.payment_menu.set("All payment methods")
+            self.sales_rank_menu.set("Sales ranking: default")
             self.reason_menu.set("All reasons")
             self.subscription_status_menu.set("All statuses")
             self.subscription_days_menu.set("Days: default")
@@ -1054,6 +1067,7 @@ class ReportApp(ctk.CTk):
         self.sort_menu.set(state["sort"])
         payment_values = list(self.payment_menu.cget("values"))
         self.payment_menu.set(state["payment"] if state["payment"] in payment_values else "All payment methods")
+        self.sales_rank_menu.set(state.get("sales_rank", "Sales ranking: default"))
         self.reason_menu.set(state.get("reason", "All reasons") if state.get("reason", "All reasons") in PURCHASE_REASONS else "All reasons")
         self.subscription_status_menu.set(state.get("subscription_status", "All statuses"))
         self.subscription_days_menu.set(state.get("subscription_days", "Days: default"))
@@ -1342,7 +1356,10 @@ class ReportApp(ctk.CTk):
         self.load_started = time.monotonic()
         self.loading_bar.pack(fill="x", pady=1)
         self.loading_bar.start()
-        threading.Thread(target=self._query_worker, args=(kind, query, params, column_keys, refreshing, query_generation), daemon=True).start()
+        sales_ranking = self.sales_rank_menu.get()
+        threading.Thread(target=self._query_worker,
+                         args=(kind, query, params, column_keys, refreshing,
+                               query_generation, sales_ranking), daemon=True).start()
 
     def refresh_report(self):
         # Refresh is also the report's reset action: return every filter to its
@@ -1366,6 +1383,7 @@ class ReportApp(ctk.CTk):
         self.sort_menu.set("Expiry: soonest first" if self.report_type.get() == "subscriptions"
                            else "Date: newest first")
         self.payment_menu.set("All payment methods")
+        self.sales_rank_menu.set("Sales ranking: default")
         self.reason_menu.set("All reasons")
         self.subscription_status_menu.set("All statuses")
         self.subscription_days_menu.set("Days: default")
@@ -1378,7 +1396,8 @@ class ReportApp(ctk.CTk):
         self.suspend_live_filters = False
         self.run_report(refreshing=True)
 
-    def _query_worker(self, kind, query, params, column_keys, refreshing, query_generation):
+    def _query_worker(self, kind, query, params, column_keys, refreshing,
+                      query_generation, sales_ranking):
         try:
             with db_connect(self.config_data) as conn:
                 conn.ping(reconnect=True)
@@ -1387,6 +1406,8 @@ class ReportApp(ctk.CTk):
                     self.mark_purchase_price_changes(rows)
                 elif kind in ("sales", "cash"):
                     self.mark_sale_price_status(rows)
+                if kind == "sales":
+                    self.rank_sales_rows(rows, sales_ranking)
                 for row in rows:
                     row["__display_values"] = tuple(self.row_display(row, key) for key in column_keys)
                 categories = cash_rows = None
@@ -1398,6 +1419,31 @@ class ReportApp(ctk.CTk):
                         cash_rows = cur.fetchall()
             self.after(0, lambda: self.finish_query_smooth(kind, rows, categories, cash_rows, refreshing, query_generation))
         except Exception as exc: self.after(0, lambda e=exc: self.query_failed(e, query_generation))
+
+    def rank_sales_rows(self, rows, ranking):
+        """Rank sale lines by each product's total quantity or occurrence count."""
+        if ranking == "Sales ranking: default":
+            return
+        totals = {}
+        repeats = {}
+        for row in rows:
+            product = str(row.get("barcode") or row.get("item_name") or "")
+            quantity = self.number(row, "qty_sold")
+            totals[product] = totals.get(product, 0.0) + quantity
+            if quantity > 0:
+                repeats[product] = repeats.get(product, 0) + 1
+        if ranking == "Most sold by QTY":
+            rows.sort(key=lambda row: (
+                -totals.get(str(row.get("barcode") or row.get("item_name") or ""), 0.0),
+                str(row.get("item_name") or "").casefold(),
+                -(row.get("sold_at").timestamp() if isinstance(row.get("sold_at"), datetime) else 0),
+            ))
+        else:
+            rows.sort(key=lambda row: (
+                -repeats.get(str(row.get("barcode") or row.get("item_name") or ""), 0),
+                -totals.get(str(row.get("barcode") or row.get("item_name") or ""), 0.0),
+                str(row.get("item_name") or "").casefold(),
+            ))
 
     def finish_query_smooth(self, kind, rows, categories, cash_rows, refreshed, query_generation):
         if query_generation != self.query_generation:
