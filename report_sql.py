@@ -216,6 +216,18 @@ FROM (
     JOIN products p ON p.id = tl.product
     LEFT JOIN categories c ON c.id = p.category
     WHERE cc.money = %(money)s AND tl.product IS NOT NULL AND tl.units <> 0
+      AND NOT (
+          tl.units < 0
+          AND EXISTS (
+              SELECT 1
+              FROM stockdiary matching_refund
+              WHERE matching_refund.product = tl.product
+                AND matching_refund.reason = 2
+                AND matching_refund.units > 0
+                AND ABS(TIMESTAMPDIFF(
+                    SECOND, matching_refund.datenew, r.datenew)) <= 5
+          )
+      )
       AND %(movement_filter)s IN ('All', 'Sold')
 
     UNION ALL
@@ -226,6 +238,7 @@ FROM (
             JOIN receipts refund_receipt ON refund_receipt.id = refund_line.ticket
             JOIN tickets refund_ticket ON refund_ticket.id = refund_receipt.id
             WHERE refund_line.product = sd.product
+              AND refund_line.units > 0
               AND refund_receipt.datenew < sd.datenew
             ORDER BY refund_receipt.datenew DESC, refund_line.id DESC
             LIMIT 1) AS ticket_no,
@@ -248,6 +261,7 @@ FROM (
                    JOIN receipts refund_receipt ON refund_receipt.id = refund_line.ticket
                    JOIN tickets refund_ticket ON refund_ticket.id = refund_receipt.id
                    WHERE refund_line.product = sd.product
+                     AND refund_line.units > 0
                      AND refund_receipt.datenew < sd.datenew
                    ORDER BY refund_receipt.datenew DESC, refund_line.id DESC
                    LIMIT 1
@@ -269,17 +283,6 @@ FROM (
     LEFT JOIN categories c ON c.id = p.category
     WHERE cc.money = %(money)s
       AND sd.reason = 2 AND sd.units > 0
-      AND NOT EXISTS (
-          SELECT 1
-          FROM receipts direct_refund_receipt
-          JOIN ticketlines direct_refund_line
-            ON direct_refund_line.ticket = direct_refund_receipt.id
-          WHERE direct_refund_receipt.money = cc.money
-            AND direct_refund_line.product = sd.product
-            AND direct_refund_line.units < 0
-            AND ABS(TIMESTAMPDIFF(
-                SECOND, direct_refund_receipt.datenew, sd.datenew)) <= 5
-      )
       AND %(movement_filter)s IN ('All', 'Sold')
 
     UNION ALL
