@@ -9,7 +9,7 @@ SUBSCRIPTION_REPORT_COLUMNS = (
     ("start_date", "Start Date", 100),
     ("expiry_date", "Expiry Date", 100),
     ("days_remaining", "Days Remaining", 115),
-    ("expiry_status", "Status", 105),
+    ("expiry_status", "Status", 130),
     ("amount", "Amount", 100),
 )
 
@@ -38,8 +38,8 @@ SELECT
     tl.se AS expiry_date,
     DATEDIFF(tl.se, CURDATE()) AS days_remaining,
     CASE
-        WHEN tl.se < CURDATE() THEN 'Expired'
-        WHEN DATEDIFF(tl.se, CURDATE()) BETWEEN 0 AND %(notify_days)s
+        WHEN tl.se <= CURDATE() THEN 'Expired'
+        WHEN DATEDIFF(tl.se, CURDATE()) BETWEEN 1 AND %(notify_days)s
             THEN 'Ending Soon'
         ELSE 'Active'
     END AS expiry_status,
@@ -68,9 +68,9 @@ WHERE (%(payment_method)s = 'All'
   AND (
        %(subscription_status)s = 'All'
        OR (%(subscription_status)s = 'Active' AND days_remaining > %(notify_days)s)
-       OR (%(subscription_status)s = 'Expired' AND days_remaining < 0)
+       OR (%(subscription_status)s = 'Expired' AND days_remaining <= 0)
        OR (%(subscription_status)s = 'Ending Soon'
-           AND days_remaining BETWEEN 0 AND %(notify_days)s)
+           AND days_remaining BETWEEN 1 AND %(notify_days)s)
   )
 ORDER BY {order_clause}
 """
