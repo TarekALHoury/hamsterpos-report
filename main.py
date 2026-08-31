@@ -579,8 +579,8 @@ class ReportApp(ctk.CTk):
 
         filters = ctk.CTkFrame(main, fg_color=("#e8eef6", "#111b2e"), corner_radius=14); filters.pack(fill="x", padx=28, pady=8)
         now = datetime.now().replace(second=0, microsecond=0); midnight = now.replace(hour=0, minute=0)
-        self.start_field = DateTimeField(filters, "Start date & time", midnight, self.live_date_filter_changed); self.start_field.grid(row=0, column=0, padx=18, pady=14, sticky="w")
-        self.end_field = DateTimeField(filters, "End date & time", now, self.live_end_filter_changed); self.end_field.grid(row=0, column=1, padx=18, pady=14, sticky="w")
+        self.start_field = DateTimeField(filters, "Start date & time", midnight, self.live_date_filter_changed); self.start_field.grid(row=0, column=0, padx=(18, 6), pady=14, sticky="w")
+        self.end_field = DateTimeField(filters, "End date & time", now, self.live_end_filter_changed); self.end_field.grid(row=0, column=1, padx=(6, 18), pady=14, sticky="w")
         box = ctk.CTkFrame(filters, fg_color="transparent"); box.grid(row=0, column=2, padx=18, pady=14, sticky="ew")
         self.search_label = ctk.CTkLabel(box, text="Product search", text_color=("#475569", "#9aa9bd"))
         self.search_label.pack(anchor="w")
@@ -605,10 +605,10 @@ class ReportApp(ctk.CTk):
         filters.grid_columnconfigure(2, weight=1)
 
         self.cash_filters = ctk.CTkFrame(filters, fg_color="transparent")
-        ctk.CTkLabel(self.cash_filters, text="Close cash sequence", text_color=("#475569", "#9aa9bd")).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ctk.CTkLabel(self.cash_filters, text="Close cash sequence", text_color=("#475569", "#9aa9bd")).grid(row=0, column=0, sticky="w", padx=(0, 6))
         ctk.CTkLabel(self.cash_filters, text="Movement", text_color=("#475569", "#9aa9bd")).grid(row=0, column=1, sticky="w")
         self.cash_menu = ctk.CTkOptionMenu(self.cash_filters, values=["No sequences found"], width=410, command=self.live_filter_changed)
-        self.cash_menu.grid(row=1, column=0, padx=(0, 12))
+        self.cash_menu.grid(row=1, column=0, padx=(0, 6))
         self.movement_menu = ctk.CTkOptionMenu(self.cash_filters, values=["All", "Sold", "Purchased"], width=140, command=self.live_filter_changed)
         self.movement_menu.set("All"); self.movement_menu.grid(row=1, column=1)
 
@@ -862,7 +862,7 @@ class ReportApp(ctk.CTk):
         self.payment_menu.configure(values=values)
         self.payment_menu.set(selected if selected in values else "All payment methods")
         if kind == "purchases":
-            self.reason_menu.pack(side="left", padx=(0, 10), before=self.group_check)
+            self.reason_menu.pack(side="left", padx=(0, 8), before=self.group_check)
         else:
             self.reason_menu.pack_forget()
 
@@ -918,8 +918,8 @@ class ReportApp(ctk.CTk):
                 self.sort_menu.configure(values=["Date: newest first", "Date: oldest first",
                                                  "Category A–Z", "Category Z–A"])
                 self.category_menu.pack(side="left", padx=(0, 8))
-                self.sort_menu.pack(side="left")
-                self.payment_menu.pack(side="left", padx=10)
+                self.sort_menu.pack(side="left", padx=(0, 8))
+                self.payment_menu.pack(side="left", padx=(0, 8))
                 self.group_check.pack(side="left", padx=(2, 8))
                 self.configure_payment_filter(kind)
             if kind == "cash":
@@ -928,7 +928,10 @@ class ReportApp(ctk.CTk):
                 if not self.cash_sequences:
                     self.after_idle(self.load_cash_sequences)
             else:
-                self.cash_filters.grid_remove(); self.start_field.grid(); self.end_field.grid()
+                self.cash_filters.grid_remove()
+                date_padding = 18 if subscription_report else 6
+                self.start_field.grid(padx=(18, date_padding))
+                self.end_field.grid(padx=(date_padding, 18))
             self.resize_columns()
             self.populate_cached_rows_immediately()
             empty_loaded = self.report_has_run.get(kind) and not self.rows
