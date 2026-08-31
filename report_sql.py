@@ -58,9 +58,9 @@ WHERE r.datenew >= %(start_at)s
   AND (%(category_id)s IS NULL OR p.category = %(category_id)s)
   AND (
        %(search)s = ''
-       OR p.code LIKE %(search_like)s
-       OR p.name LIKE %(search_like)s
-       OR p.reference LIKE %(search_like)s
+       OR p.code LIKE %(search_like)s ESCAPE '!'
+       OR p.name LIKE %(search_like)s ESCAPE '!'
+       OR p.reference LIKE %(search_like)s ESCAPE '!'
   )
 ) sale_rows
 WHERE (%(payment_method)s = 'All' OR FIND_IN_SET(%(payment_method)s, REPLACE(payment_method, ', ', ',')) > 0)
@@ -134,9 +134,9 @@ WHERE sd.reason IN (1, -2, 4, -4, -8, -3, -6, -5, -7, 1000)
   AND (%(category_id)s IS NULL OR p.category = %(category_id)s)
   AND (
        %(search)s = ''
-       OR p.code LIKE %(search_like)s
-       OR p.name LIKE %(search_like)s
-       OR p.reference LIKE %(search_like)s
+       OR p.code LIKE %(search_like)s ESCAPE '!'
+       OR p.name LIKE %(search_like)s ESCAPE '!'
+       OR p.reference LIKE %(search_like)s ESCAPE '!'
   )
 ) purchase_rows
 WHERE purchased_at >= %(start_at)s
@@ -259,7 +259,12 @@ FROM (
            c.name AS category, 'Refund' AS movement_type
     FROM closedcash cc
     JOIN stockdiary sd ON sd.datenew >= cc.datestart
-                       AND sd.datenew <= COALESCE(cc.dateend, NOW())
+                       AND sd.datenew <= COALESCE(
+                           cc.dateend,
+                           (SELECT MIN(next_cc.datestart)
+                            FROM closedcash next_cc
+                            WHERE next_cc.datestart > cc.datestart),
+                           NOW())
     JOIN products p ON p.id = sd.product
     LEFT JOIN categories c ON c.id = p.category
     WHERE cc.money = %(money)s
@@ -332,7 +337,12 @@ FROM (
             AND DATE(purchase_receipt.datenew) = DATE(sd.datenew)
           ORDER BY (purchase_payment.ref = sd.id) DESC, purchase_receipt.datenew DESC
           LIMIT 1
-      ), sd.datenew) ELSE sd.datenew END) <= COALESCE(cc.dateend, NOW())
+      ), sd.datenew) ELSE sd.datenew END) <= COALESCE(
+          cc.dateend,
+          (SELECT MIN(next_cc.datestart)
+           FROM closedcash next_cc
+           WHERE next_cc.datestart > cc.datestart),
+          NOW())
     JOIN products p ON p.id = sd.product
     LEFT JOIN categories c ON c.id = p.category
     WHERE cc.money = %(money)s AND sd.units > 0 AND sd.reason <> 2
@@ -341,8 +351,8 @@ FROM (
 ) movements
 WHERE (%(category_id)s IS NULL OR category = %(category_name)s)
   AND (%(payment_method)s = 'All' OR FIND_IN_SET(%(payment_method)s, REPLACE(payment_method, ', ', ',')) > 0)
-  AND (%(search)s = '' OR barcode LIKE %(search_like)s
-       OR item_name LIKE %(search_like)s)
+  AND (%(search)s = '' OR barcode LIKE %(search_like)s ESCAPE '!'
+       OR item_name LIKE %(search_like)s ESCAPE '!')
 GROUP BY movement_at, ticket_no, barcode, item_name, payment_method,
          sell_price, regular_sell_price, explicit_discount_amount, price_level,
          category, movement_type

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import threading
+import logging
 from datetime import date, timedelta
 from typing import Callable
 
 from subscription_sql import SUBSCRIPTIONS_EXPIRING_SQL
+
+
+logger = logging.getLogger(__name__)
 
 
 class SubscriptionMonitor:
@@ -46,14 +50,25 @@ class SubscriptionMonitor:
             self.thread.join(timeout=timeout)
 
     def _run(self) -> None:
+        consecutive_failures = 0
         while not self.stop_event.is_set():
             config = dict(self.config_provider())
             manual_check = self.manual_check_event.is_set()
             self.manual_check_event.clear()
-            if config.get("subscription_notifications_enabled", True) or manual_check:
-                self.check_once()
             interval = max(1, int(config.get("subscription_check_minutes", 60))) * 60
-            self.wake_event.wait(interval)
+            wait_seconds = interval
+            if config.get("subscription_notifications_enabled", True) or manual_check:
+                result = self.check_once()
+                if result.get("error"):
+                    consecutive_failures += 1
+                    logger.error("Subscription check failed: %s", result["error"])
+                    # Avoid hammering an unavailable database. Manual checks
+                    # still interrupt this wait immediately through wake_event.
+                    wait_seconds = min(interval * (2 ** min(consecutive_failures, 3)),
+                                       6 * 60 * 60)
+                else:
+                    consecutive_failures = 0
+            self.wake_event.wait(wait_seconds)
             self.wake_event.clear()
 
     def check_once(self) -> dict:

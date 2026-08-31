@@ -56,11 +56,11 @@ WHERE tl.ss IS NOT NULL
   AND tl.se <= DATE(%(end_at)s)
   AND (
        %(search)s = ''
-       OR c.name LIKE %(search_like)s
-       OR c.phone LIKE %(search_like)s
-       OR CAST(t.ticketid AS CHAR) LIKE %(search_like)s
-       OR p.name LIKE %(search_like)s
-       OR p.code LIKE %(search_like)s
+       OR c.name LIKE %(search_like)s ESCAPE '!'
+       OR c.phone LIKE %(search_like)s ESCAPE '!'
+       OR CAST(t.ticketid AS CHAR) LIKE %(search_like)s ESCAPE '!'
+       OR p.name LIKE %(search_like)s ESCAPE '!'
+       OR p.code LIKE %(search_like)s ESCAPE '!'
   )
 ) subscription_rows
 WHERE (%(payment_method)s = 'All'
@@ -68,7 +68,7 @@ WHERE (%(payment_method)s = 'All'
   AND (
        %(subscription_status)s = 'All'
        OR (%(subscription_status)s = 'Active' AND days_remaining > %(notify_days)s)
-       OR (%(subscription_status)s = 'Inactive' AND days_remaining < 0)
+       OR (%(subscription_status)s = 'Expired' AND days_remaining < 0)
        OR (%(subscription_status)s = 'Ending Soon'
            AND days_remaining BETWEEN 0 AND %(notify_days)s)
   )

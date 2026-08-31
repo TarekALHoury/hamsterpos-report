@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import ctypes
 import json
+import logging
 import os
 import queue
 import re
@@ -42,6 +43,7 @@ APP_NAME = "HamsterPOS Reports"
 APP_VERSION = "6.8"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
+CONFIG_LOAD_WARNING: str | None = None
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
                  "total_sell_price", "total_sold", "total_bought"}
 PURCHASE_REASONS = {
@@ -109,6 +111,8 @@ def unprotect(value: str) -> str:
 
 
 def load_config() -> dict[str, Any]:
+    global CONFIG_LOAD_WARNING
+    CONFIG_LOAD_WARNING = None
     defaults = {
         "host": "localhost", "port": 3306, "database": "", "username": "",
         "password": "", "purchase_reason": "1", "currency": "$",
@@ -123,6 +127,11 @@ def load_config() -> dict[str, Any]:
         saved["password"] = unprotect(saved.pop("password_protected", ""))
         return defaults | saved
     except Exception:
+        CONFIG_LOAD_WARNING = (
+            "Couldn't read the saved settings. The app is using defaults; "
+            "please open Database settings and save the connection again."
+        )
+        logging.getLogger(__name__).exception("Could not load saved settings")
         return defaults
 
 
@@ -446,6 +455,12 @@ class ReportApp(ctk.CTk):
         self.background_events = queue.Queue()
         if start_hidden:
             self.withdraw()
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            filename=APP_DIR / "app.log",
+            level=logging.WARNING,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
         self.config_data = load_config()
         ctk.set_appearance_mode(self.config_data.get("appearance", "Dark")); ctk.set_default_color_theme("blue")
         self.title(f"{APP_NAME} — v{APP_VERSION}")
@@ -465,6 +480,11 @@ class ReportApp(ctk.CTk):
         self.report_type = ctk.StringVar(value="sales"); self.sort_mode = ctk.StringVar(value="Date: newest first")
         self.group_categories = ctk.BooleanVar(value=False)
         self.build_ui()
+        if CONFIG_LOAD_WARNING:
+            self.status.configure(text=CONFIG_LOAD_WARNING, text_color="#ff6b6b")
+            if not start_hidden:
+                self.after(100, lambda warning=CONFIG_LOAD_WARNING: messagebox.showwarning(
+                    APP_NAME, warning, parent=self))
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.setup_background_services()
         self._theme_sync_job = None
@@ -628,7 +648,7 @@ class ReportApp(ctk.CTk):
         self.reason_menu = ctk.CTkOptionMenu(filter2, values=list(PURCHASE_REASONS), width=165, command=self.live_filter_changed)
         self.reason_menu.set("All reasons")
         self.subscription_status_menu = ctk.CTkOptionMenu(
-            filter2, values=["All statuses", "Active", "Inactive", "Ending soon"],
+            filter2, values=["All statuses", "Active", "Expired", "Ending soon"],
             width=150, command=self.live_filter_changed)
         self.subscription_status_menu.set("All statuses")
         self.subscription_days_menu = ctk.CTkOptionMenu(
@@ -1069,7 +1089,10 @@ class ReportApp(ctk.CTk):
         self.payment_menu.set(state["payment"] if state["payment"] in payment_values else "All payment methods")
         self.sales_rank_menu.set(state.get("sales_rank", "Sales ranking: default"))
         self.reason_menu.set(state.get("reason", "All reasons") if state.get("reason", "All reasons") in PURCHASE_REASONS else "All reasons")
-        self.subscription_status_menu.set(state.get("subscription_status", "All statuses"))
+        saved_status = state.get("subscription_status", "All statuses")
+        if saved_status == "Inactive":
+            saved_status = "Expired"
+        self.subscription_status_menu.set(saved_status)
         self.subscription_days_menu.set(state.get("subscription_days", "Days: default"))
         self.set_search_entry(state["search"])
         self.group_categories.set(state["group"]); self.movement_menu.set(state["movement"])
@@ -1308,10 +1331,11 @@ class ReportApp(ctk.CTk):
 
     def query_parameters(self):
         search = self.get_search_text()
+        escaped_search = search.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         reason = str(self.config_data.get("purchase_reason", "1")).strip()
         selected_payment = self.payment_menu.get()
         status = self.subscription_status_menu.get()
-        common = {"category_id": self.categories.get(self.category_menu.get()), "category_name": None if self.category_menu.get() == "All categories" else self.category_menu.get(), "payment_method": "All" if selected_payment == "All payment methods" else selected_payment, "reason": PURCHASE_REASONS.get(self.reason_menu.get()), "search": search, "search_like": f"%{search}%", "purchase_reason": int(reason) if reason else None,
+        common = {"category_id": self.categories.get(self.category_menu.get()), "category_name": None if self.category_menu.get() == "All categories" else self.category_menu.get(), "payment_method": "All" if selected_payment == "All payment methods" else selected_payment, "reason": PURCHASE_REASONS.get(self.reason_menu.get()), "search": search, "search_like": f"%{escaped_search}%", "purchase_reason": int(reason) if reason else None,
                   "subscription_status": "All" if status == "All statuses" else status.title(),
                   "notify_days": int(self.config_data.get("subscription_notify_days", 2))}
         if self.report_type.get() == "cash":
@@ -1337,7 +1361,12 @@ class ReportApp(ctk.CTk):
                 "Start: newest first": "start_date DESC, customer_name ASC",
                 "Start: oldest first": "start_date ASC, customer_name ASC",
             }.get(self.sort_menu.get(), "expiry_date ASC, customer_name ASC")
-        return {"Date: newest first": "1 DESC", "Date: oldest first": "1 ASC", "Category A–Z": "category ASC, 1 DESC", "Category Z–A": "category DESC, 1 DESC"}[self.sort_mode.get()]
+        # ORDER BY is intentionally limited to these literal clauses. Never
+        # pass user-entered text into the SQL template.
+        return {"Date: newest first": "1 DESC", "Date: oldest first": "1 ASC",
+                "Category A–Z": "category ASC, 1 DESC",
+                "Category Z–A": "category DESC, 1 DESC"}.get(
+                    self.sort_mode.get(), "1 DESC")
 
     def run_report(self, refreshing=False):
         try: params = self.query_parameters()
