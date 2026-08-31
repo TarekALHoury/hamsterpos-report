@@ -44,6 +44,8 @@ APP_VERSION = "6.10"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 CONFIG_LOAD_WARNING: str | None = None
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\HamsterPOSReports.SingleInstance"
+_single_instance_mutex = None
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
                  "total_sell_price", "total_sold", "total_bought"}
 PURCHASE_REASONS = {
@@ -59,6 +61,38 @@ PURCHASE_REASONS = {
     "Used": -7,
     "Transfer": 1000,
 }
+
+
+def acquire_single_instance(notify: bool = True) -> bool:
+    """Return False when another copy is already running for this user session."""
+    global _single_instance_mutex
+    kernel32 = ctypes.windll.kernel32
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    create_mutex.restype = wintypes.HANDLE
+    handle = create_mutex(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+    if not handle:
+        raise ctypes.WinError()
+    already_exists = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+    if already_exists:
+        kernel32.CloseHandle(handle)
+        if notify:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                f"{APP_NAME} is already running.",
+                APP_NAME,
+                0x40,
+            )
+        return False
+    _single_instance_mutex = handle
+    return True
+
+
+def release_single_instance() -> None:
+    global _single_instance_mutex
+    if _single_instance_mutex:
+        ctypes.windll.kernel32.CloseHandle(_single_instance_mutex)
+        _single_instance_mutex = None
 
 
 def resource_path(relative_path: str) -> Path:
@@ -1942,11 +1976,16 @@ class ReportApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    app = ReportApp(start_hidden="--tray" in sys.argv[1:])
-    if "--toast-smoke-test" in sys.argv[1:]:
-        app.notification_service.show_status(
-            "HamsterPOS Reports", "Notification packaging test successful.")
-        app.after(1500, app.exit_application)
-    if "--smoke-test" in sys.argv[1:]:
-        app.after(2500, app.exit_application)
-    app.mainloop()
+    smoke_test = "--smoke-test" in sys.argv[1:]
+    if acquire_single_instance(notify=not smoke_test):
+        try:
+            app = ReportApp(start_hidden="--tray" in sys.argv[1:])
+            if "--toast-smoke-test" in sys.argv[1:]:
+                app.notification_service.show_status(
+                    "HamsterPOS Reports", "Notification packaging test successful.")
+                app.after(1500, app.exit_application)
+            if smoke_test:
+                app.after(2500, app.exit_application)
+            app.mainloop()
+        finally:
+            release_single_instance()
