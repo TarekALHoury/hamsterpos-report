@@ -6,14 +6,15 @@ older MySQL versions commonly bundled with POS installations.
 
 SALES_SQL = """
 SELECT
-    sold_at, barcode, item_name, payment_method, sell_price, actual_sell_price,
+    sold_at, ticket_no, barcode, item_name, payment_method, sell_price, actual_sell_price,
     regular_sell_price, explicit_discount_amount, price_level,
     SUM(qty_sold) AS qty_sold,
     SUM(sales - explicit_discount_amount) AS sales,
     category
 FROM (
 SELECT
-    r.datenew AS sold_at, p.code AS barcode, p.name AS item_name,
+    r.datenew AS sold_at, t.ticketid AS ticket_no,
+    p.code AS barcode, p.name AS item_name,
     COALESCE((
         SELECT GROUP_CONCAT(DISTINCT
             CASE LOWER(pay.payment)
@@ -63,7 +64,7 @@ WHERE r.datenew >= %(start_at)s
   )
 ) sale_rows
 WHERE (%(payment_method)s = 'All' OR FIND_IN_SET(%(payment_method)s, REPLACE(payment_method, ', ', ',')) > 0)
-GROUP BY sold_at, barcode, item_name, payment_method, sell_price, actual_sell_price,
+GROUP BY sold_at, ticket_no, barcode, item_name, payment_method, sell_price, actual_sell_price,
          regular_sell_price, explicit_discount_amount, price_level, category
 ORDER BY {order_clause}
 """
@@ -148,6 +149,7 @@ ORDER BY {order_clause}
 
 SALES_COLUMNS = (
     ("sold_at", "Date & Time", 125),
+    ("ticket_no", "Ticket No.", 80),
     ("barcode", "Item Barcode", 105),
     ("item_name", "Item Name", 180),
     ("payment_method", "Payment Method", 125),

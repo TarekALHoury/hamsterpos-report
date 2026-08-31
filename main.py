@@ -39,7 +39,7 @@ from storage.notification_history import NotificationHistory
 from subscription_sql import SUBSCRIPTION_REPORT_COLUMNS, SUBSCRIPTION_REPORT_SQL
 
 APP_NAME = "HamsterPOS Reports"
-APP_VERSION = "6.7"
+APP_VERSION = "6.8"
 APP_DIR = Path(os.getenv("APPDATA", Path.home())) / "HamsterPOSReports"
 CONFIG_FILE = APP_DIR / "settings.json"
 MONEY_COLUMNS = {"buy_price", "sell_price", "sales", "total_buy_price", "amount",
@@ -1192,7 +1192,7 @@ class ReportApp(ctk.CTk):
         totals = dict(self.totals_data(rows))
         label = f"{category} TOTAL"
         if self.report_type.get() == "sales":
-            return [label, "", "", "", self.format_money(totals["Sell Price"]),
+            return [label, "", "", "", "", self.format_money(totals["Sell Price"]),
                     "", f'{totals["QTY Sold"]:,.2f}',
                     self.format_money(totals["Sales"])]
         if self.report_type.get() == "purchases":
@@ -1271,7 +1271,7 @@ class ReportApp(ctk.CTk):
             return ["TOTAL", "", f"{int(totals['Subscriptions']):,} subscriptions",
                     "", "", "", "", "", "", self.format_money(totals["Total Amount"])]
         if self.report_type.get() == "sales":
-            return ["TOTAL", "", "", "", self.format_money(totals['Sell Price']),
+            return ["TOTAL", "", "", "", "", self.format_money(totals['Sell Price']),
                     "", f"{totals['QTY Sold']:,.2f}",
                     self.format_money(totals['Sales'])]
         if self.report_type.get() == "purchases":
@@ -1430,6 +1430,11 @@ class ReportApp(ctk.CTk):
 
     def row_display(self, row, key, pdf=False):
         value = self.display(row.get(key), key)
+        if key == "ticket_no" and value and (
+                row.get("movement_type") == "Refund"
+                or self.number(row, "qty_sold") < 0
+                or self.number(row, "qty_out") < 0):
+            return value if value.startswith("#") else f"#{value}"
         change = row.get("__price_change", 0)
         if key == "buy_price" and change:
             marker = "▲" if change > 0 else "▼"
@@ -1547,7 +1552,9 @@ class ReportApp(ctk.CTk):
 
     def mark_sale_price_status(self, rows):
         for row in rows:
-            if row.get("movement_type") == "Refund":
+            if (row.get("movement_type") == "Refund"
+                    or self.number(row, "qty_sold") < 0
+                    or self.number(row, "qty_out") < 0):
                 row["price_status"] = "REFUND (-)"
                 row["__sale_status"] = "discount"
                 continue
