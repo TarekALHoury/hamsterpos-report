@@ -1,8 +1,5 @@
 #define MyAppName "HamsterPOS Reports"
-#define MyAppVersion "6.7.New-UI"
-; VersionInfoVersion (the exe's embedded Win32 file-version resource) must be
-; strictly numeric X.X.X.X, unlike AppVersion which accepts any display string.
-#define MyAppVersionInfo "6.7.0.0"
+#define MyAppVersion "6.7"
 #define MyAppPublisher "HamsterPOS Reports"
 #define MyAppExeName "report.exe"
 
@@ -26,7 +23,7 @@ CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\app_icon.ico
 SetupIconFile=assets\app_icon.ico
-VersionInfoVersion={#MyAppVersionInfo}
+VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoCompany={#MyAppPublisher}
 
@@ -37,10 +34,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-; Wildcard + recursesubdirs so this keeps working unchanged if the PyInstaller
-; build ever switches from --onefile to --onedir (a folder full of files
-; instead of a single exe) — today dist\ just contains report.exe.
-Source: "dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -50,8 +44,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
-[UninstallDelete]
-; Belt-and-suspenders: forces removal of the whole install directory tree
-; (and the dir itself) even if something wrote an extra file into {app} at
-; runtime that Inno's automatic per-file uninstall tracking wouldn't know about.
-Type: filesandordirs; Name: "{app}"
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "HamsterPOS Reports"; Flags: uninsdeletevalue dontcreatekey
